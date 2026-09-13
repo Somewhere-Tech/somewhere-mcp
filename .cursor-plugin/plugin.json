@@ -1,0 +1,19 @@
+{
+  "name": "somewhere",
+  "version": "1.0.0",
+  "description": "Build, deploy, and inspect apps on somewhere.tech through its hosted MCP server.",
+  "author": {
+    "name": "Somewhere.Tech"
+  },
+  "homepage": "https://somewhere.tech",
+  "repository": "https://github.com/Somewhere-Tech/somewhere-mcp",
+  "license": "MIT",
+  "keywords": [
+    "backend",
+    "deploy",
+    "mcp",
+    "somewhere"
+  ],
+  "logo": "assets/logo.svg",
+  "mcpServers": "mcp.json"
+}

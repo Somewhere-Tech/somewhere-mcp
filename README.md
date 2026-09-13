@@ -18,7 +18,9 @@ Use a hosted endpoint. You do not need to clone or deploy this repository to use
 
 These are profiles of **one implementation**, with tool visibility configured for each surface. They share the same platform account and projects. Configuring a custom connector is separate from a client's directory listing or approval.
 
-For a client that accepts `mcp.json`, including Cursor:
+### Cursor
+
+The Cursor Marketplace submission is being prepared. It is not listed or approved yet. Until it is available, add this configuration to `~/.cursor/mcp.json` for your account or `.cursor/mcp.json` for one project:
 
 ```json
 {
@@ -30,7 +32,13 @@ For a client that accepts `mcp.json`, including Cursor:
 }
 ```
 
-Sign in through the client's OAuth flow when prompted. Clients that use API keys can add an `Authorization: Bearer <your Somewhere API key>` header in their local configuration. Transport is Streamable HTTP. Cursor-specific sign-in acceptance is still being verified; the configuration above uses its documented custom-server format.
+Reload Cursor, enable the `somewhere` server in **Customize**, and sign in through OAuth when prompted. A Somewhere account is required. The connection uses Streamable HTTP and your account's existing project permissions. This configuration follows Cursor's documented remote-server format, but end-to-end Cursor OAuth acceptance has not yet been verified. Cursor applies its normal MCP tool approval settings; this package includes no hooks and does not enable automatic approvals.
+
+The repository also contains `.cursor-plugin/plugin.json` and the same root `mcp.json` for local plugin testing and Marketplace review.
+
+### Other MCP clients
+
+Sign in through the client's OAuth flow when prompted. Clients that use API keys can add an `Authorization: Bearer <your Somewhere API key>` header in their local configuration.
 
 Then ask your assistant:
 
