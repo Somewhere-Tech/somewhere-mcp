@@ -3,7 +3,7 @@
 // Derived from npm/package metadata, worker AI catalog sources, temp-deploy constants,
 // and the source-discovered runtime/API surface.
 
-export const SDK_VERSION = "0.7.5";
+export const SDK_VERSION = "0.7.6";
 export const WORKERS_AI_REASONING_MODELS_INLINE = "`@cf/moonshotai/kimi-k2.6`, `@cf/moonshotai/kimi-k2.5`, `@cf/google/gemma-4-26b-a4b-it`, `@cf/qwen/qwen3-30b-a3b-fp8`, `@cf/zai-org/glm-4.7-flash`";
 export const WORKERS_AI_REASONING_MODELS_SLASH = "@cf/moonshotai/kimi-k2.6 / @cf/moonshotai/kimi-k2.5 / @cf/google/gemma-4-26b-a4b-it / @cf/qwen/qwen3-30b-a3b-fp8 / @cf/zai-org/glm-4.7-flash";
 export const WORKERS_AI_NON_REASONING_MODELS_INLINE = "`@cf/meta/llama-3.3-70b-instruct-fp8-fast`, `@cf/mistralai/mistral-small-3.1-24b-instruct`, `@cf/zai-org/glm-5.2`";

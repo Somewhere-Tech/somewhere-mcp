@@ -86,6 +86,8 @@ export default schema({
   browser.
 - \`anyOf(owner(), member({ ... }))\` — the row's owner or a member of its
   group may access it. The platform sets and protects the owner column.
+  Creating a row requires membership in its explicitly supplied group;
+  becoming the owner does not authorize assigning a row to another group.
 - \`parent({ via: 'project_id' })\` — access follows the referenced parent's
   private scope. Declare \`project_id\` with \`references: 'projects'\`.
   A foreign key or relationship alone never grants this access.
@@ -981,12 +983,22 @@ What happens on deploy:
 Import the policy helpers explicitly in \`db/schema.ts\`:
 \`import { anyOf, parent } from 'somewhere/db';\`.
 
-Use \`anyOf(owner(), member({ group: 'id', membership: 'project_members',
-member_user: 'user_id', member_group: 'project_id' }))\` on \`projects\` when
-both the project's creator and its members should have private access. The
-membership table is declared separately. Ownership is set by the platform on
-create; a creator does not need a membership row to create or access their own
-project. Removing their membership does not remove their ownership.
+Use \`anyOf(owner(), member({ group: 'team_id', membership: 'team_members',
+member_user: 'user_id', member_group: 'team_id' }))\` when both a row's
+creator and its team members should have private access. The membership table
+is declared separately. Ownership is set by the platform on create.
+
+Creating a row requires an explicitly supplied, complete, non-null group key
+and membership in that group. Ownership alone cannot authorize placing new
+content in someone else's team. The membership check and insert are one
+database statement. Group keys cannot be changed or incremented on update.
+Creating a new group together with its initial memberships is application
+logic in an authenticated function; it is not bootstrapped through an
+owner-or-member browser insert.
+
+For existing rows, owner-or-member access remains an OR: removing the
+creator's membership does not remove their ownership or their permission to
+read, edit ordinary fields, or delete their own row, subject to client grants.
 
 For a task that follows its project, declare
 \`project_id: integer({ references: 'projects' })\` and
