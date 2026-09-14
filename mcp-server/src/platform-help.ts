@@ -1719,13 +1719,14 @@ What it is not:
 - **Membership-scoped tables are refused** in a batch (single writes to them
   still work): a post-execution membership denial could not roll back its
   siblings, so the batch refuses up front.
-- **Ownership binds the same way as single writes.** With no verified user,
-  a project in visitor identity mode — the default for new projects — scopes
-  an \`owner()\` table to an anonymous visitor identity: the batch succeeds,
-  but every intent touches only that visitor's rows. A project in
-  authenticated mode refuses instead (\`AUTH_REQUIRED\`, before any write).
-  Either way, tables your server writes on its own behalf must be declared
-  \`serverOnly()\`.
+- **Ownership binds the same way as single writes.** Plain \`owner()\`
+  requires a verified signed-in user; without one, the batch refuses with
+  \`AUTH_REQUIRED\` before any write. Only a table declaring
+  \`owner({ visitors: true })\` also accepts a verified visitor identity.
+  Each intent checks its own table's declaration: enabling visitors on one
+  table does not grant anonymous access to another. Project creation or
+  claiming does not opt tables into visitor access. Tables your server writes
+  on its own behalf must be declared \`serverOnly()\`.
 
 Outcomes, four distinguishable cases:
 
@@ -2634,8 +2635,13 @@ go.
   \`X-New-Refresh-Token\`. No 401-loop in your client code.
 - **Built-in per-user scoping** — covered in the \`sw.db\` topic. The
   structured builder (\`sw.db.from/insert/update/remove\`) auto-scopes a
-  declared \`scoped\` table to the request's verified user; raw SQL runs as
-  written and you supply your own \`WHERE user_id = ?\`.
+  declared owner table to the request's verified identity. In managed mode,
+  ordinary \`sw.db.query\` / \`sw.db.batch\` calls are refused; adding a
+  handwritten \`WHERE user_id = ?\` does not authorize them. An intentional
+  raw read requires \`sw.db.server.query\` / \`sw.db.server.batch\` after
+  your function authorizes its caller. Those explicit server calls run as
+  written, without automatic ownership filtering. See \`sw.db\` for the
+  managed-mode write limits and the separate SQL-mode contract.
 - **Role-based access control (RBAC) — platform layers.** Platform
   admin (\`platform_users.is_admin\`), project membership
   (\`project_collaborators\`), API-key authority

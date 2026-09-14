@@ -1398,10 +1398,13 @@ Topics: ${CANONICAL_DOCS_TOPICS_INLINE}. Aliases such as fetch/http/outbound and
         }
         const banner = callerHelpBanner(topic, caller);
         const normalizedTopic = topic.trim().toLowerCase().replace(/^(?:sw|ctx)\./, '');
+        const advisorHint = caller === 'cli'
+          ? '\n\nNeed help applying this contract? Ask `somewhere advisor "your question"`; include the project and exact error when diagnosing a failure.\n'
+          : '\n\nNeed help applying this contract? Ask `advisor` with your question and, for project diagnosis, `project_id`.\n';
         const body = caller === 'connector' && normalizedTopic === 'getting-started'
           ? (surface === 'connector' ? CLAUDE_CONNECTOR_GETTING_STARTED_HELP : CONNECTOR_GETTING_STARTED_HELP)
           : platformHelp(topic);
-        const text = constrainCanonicalText(banner + body, surface);
+        const text = constrainCanonicalText(banner + body + advisorHint, surface);
         record(text);
         return { content: [{ type: 'text', text }] };
 
