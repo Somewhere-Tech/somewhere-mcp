@@ -2385,7 +2385,11 @@ const result = await sw.fs.write('/uploads/avatar.png', binaryData, {
 
 ## sw.fs.read(path, options?)
 const file = await sw.fs.read('/uploads/avatar.png')
-// file = Response object — file.arrayBuffer() / file.text() / file.json()
+// Success: Response object — file.arrayBuffer() / file.text() / file.json()
+// Failure: throws an error with code, status, and message. Missing files throw
+// NOT_FOUND (404); an error response body is never returned as file content.
+// This also applies to line-range reads. Catch the error to handle absence.
+// Apps deployed before this behavior shipped need a new deploy to receive it.
 
 // Directory listing
 const files = await sw.fs.read('/uploads/')
