@@ -82,10 +82,13 @@ export default schema({
   declaration have no author and cannot be edited from the browser.
 - \`member({ group, membership, member_user, member_group })\` — rows carry a
   group key; members of that group, resolved through the named membership
-  table, read and write them. The membership table itself is never written from the
-  browser.
+  table, can read, create, update, and delete them. Use \`operations: ['read']\`
+  inside the member options for read-only membership. The membership table
+  itself is never written from the browser.
 - \`anyOf(owner(), member({ ... }))\` — the row's owner or a member of its
-  group may access it. The platform sets and protects the owner column.
+  group can read, update, and delete it. To let the team read while only the
+  owner edits or deletes, use \`member({ ..., operations: ['read'] })\` inside
+  \`anyOf\`. The platform sets and protects the owner column.
   Creating a row requires membership in its explicitly supplied group;
   becoming the owner does not authorize assigning a row to another group.
 - \`parent({ via: 'project_id' })\` — access follows the referenced parent's
@@ -209,9 +212,11 @@ contract); \`somewhere deploy-check\` compiles on the platform regardless.
   accept membership-scoped tables, and inserts into membership-scoped tables
   do not accept \`onConflict\`; write those rows one at a time. Every
   server-mode call is recorded in the query log with authority \`server\`.
-- Raw SQL (\`sw.db.query\`) is read-only on declared-schema projects and runs
-  as your server: no ownership rule is applied to it. A raw write is refused
-  with a typed error that names the server write to use instead.
+- Ordinary raw SQL (\`sw.db.query\` / \`sw.db.batch\`) is refused on
+  declared-schema projects. For a raw read that structured calls cannot
+  express, authorize the caller yourself and use \`sw.db.server.query\` or
+  \`sw.db.server.batch\`. These explicit server-authority calls do not apply
+  declared row permissions. Managed raw writes remain refused.
 
 ## Restore and existing databases
 
@@ -277,10 +282,9 @@ app-user SQL/database API access is refused (\`BROWSER_DB_ACCESS_REMOVED\`).
 For custom logic, call an \`api/\` function that uses \`sw.db\`.
 
 \`\`\`js
-// api/todos.js — server function; raw SQL is trusted server code.
+// api/todos.js — server function; declared access is scoped automatically.
 export default async function (req, sw) {
-  const user = await sw.auth.fromRequest(req)
-  const r = await sw.db.query('SELECT * FROM todos WHERE user_id = ?', [user.id])
+  const r = await sw.db.from('todos', { order: [['created_at', 'desc']] })
   return Response.json({ todos: r.data })
 }
 
@@ -288,12 +292,13 @@ export default async function (req, sw) {
 const { data } = await client.functions.invoke('todos')
 \`\`\`
 
-Raw SQL in server functions is fully supported and runs exactly as written —
-the platform never rewrites or filters it. Write the ownership filter
-yourself (\`WHERE user_id = ?\`). Passing \`{ user }\` to \`sw.db.query\` /
-\`sw.db.batch\` is an error (\`RAW_SQL_CANNOT_BE_PLATFORM_SCOPED\`):
-platform-proven scoping exists only on structured queries the platform
-composes (\`sw.db.from/insert/update/remove\` on a declared \`scoped\` table).
+On managed projects, ordinary \`sw.db.query\` / \`sw.db.batch\` calls are
+refused with \`MANAGED_RAW_SQL_REQUIRES_SERVER_AUTHORITY\`. Use the structured
+calls for declared access. When a read truly requires raw SQL, authorize the
+caller first and use \`sw.db.server.query\` or \`sw.db.server.batch\`; those
+calls run exactly as written and do not apply declared row permissions. Raw
+writes remain refused in managed mode. SQL-mode projects retain ordinary raw
+SQL behavior.
 
 ### Structured queries — the platform composes and scopes
 
@@ -332,20 +337,22 @@ shared/server-only tables run
 unscoped. The platform owns the ownership column and refuses to let
 insert/update set or reassign it (\`OWNER_COLUMN_NOT_ASSIGNABLE\`). A table
 with NO declared intent cannot be structured-queried at all — it fails the
-deploy and throws \`TABLE_INTENT_REQUIRED\` (403) at runtime; declare it or use
-raw \`sw.db.query\`. Cross-user work and undeclared tables belong in raw
-\`sw.db.query\` — the recorded manual-access exception. Passing the retired
+deploy and throws \`TABLE_INTENT_REQUIRED\` (403) at runtime; declare it or,
+for an intentional raw read, authorize the caller and use
+\`sw.db.server.query\`. Cross-user raw reads and reads from undeclared tables
+use that explicit server-authority path. Passing the retired
 third scope argument throws \`SCOPE_ARGUMENT_REMOVED\`. Responses match
 \`sw.db.query\` (\`{ data, error, count, last_row_id, changes }\`; \`count()\`
 returns exactly \`{ data, error }\`); mutations \`RETURNING *\` and publish
-the \`db:<table>\` realtime event.
+the \`db:<table>\` realtime event. The \`last_row_id\` result field is always
+null; read an inserted ID from its returned row in \`data\`.
 
 The release records the DECLARED shape, never a reconstruction from
 reading code: each deploy pins the project's table intents (scoped/shared,
 owner column) and a schema snapshot captured from the live database
-(\`SCHEMA_CAPTURE_FAILED\` if the snapshot cannot be taken). Raw
-\`sw.db.query\`/\`batch\` run as written and are never analyzed — the
-trusted, unscoped escape hatch. \`POST /v1/db/migrate\` is the same
+(\`SCHEMA_CAPTURE_FAILED\` if the snapshot cannot be taken). Explicit
+\`sw.db.server.query\`/\`batch\` reads run as written and are never analyzed —
+the deliberate server-authority escape hatch. \`POST /v1/db/migrate\` is the same
 trust class: a production target takes a named restore point BEFORE any
 statement runs (a recorded marker: restoring a database in place is not
 available, so it is not an undo), then runs your SQL atomically, exactly as written. A preview
@@ -358,7 +365,7 @@ its table access intents are declared
 by the file. \`GET
 /v1/db/access-map\` (developer key) returns the release's data-access map
 at per-table granularity: declared intents with ownership scope, the schema
-snapshot, and a plain note that raw SQL is not analyzed.
+snapshot, and a plain note that explicit server-authority SQL is not analyzed.
 
 ## Auth — sw.auth
 
@@ -985,8 +992,38 @@ Import the policy helpers explicitly in \`db/schema.ts\`:
 
 Use \`anyOf(owner(), member({ group: 'team_id', membership: 'team_members',
 member_user: 'user_id', member_group: 'team_id' }))\` when both a row's
-creator and its team members should have private access. The membership table
-is declared separately. Ownership is set by the platform on create.
+creator and its team members should be able to read, update, and delete the
+row. This is collaborative editing, including deletion by other team members.
+The membership table is declared separately. Ownership is set by the platform
+on create.
+
+For **team reading with owner-only editing and deletion**, restrict the member
+branch:
+
+\`\`\`ts
+scope: anyOf(
+  owner(),
+  member({
+    group: 'team_id',
+    membership: 'team_members',
+    member_user: 'user_id',
+    member_group: 'team_id',
+    operations: ['read'],
+  }),
+)
+\`\`\`
+
+\`operations\` restricts what membership grants: \`read\`, \`create\`,
+\`update\`, and \`delete\`. Omit it for all four. Reading includes list,
+get, counts, and related-row reads. The owner's authority remains independent;
+a read-only teammate cannot edit or delete someone else's row. A standalone
+\`member({ ..., operations: ['read'] })\` table is also read-only for members.
+An empty list grants members nothing. Create-only membership is supported;
+update or delete must also include \`read\`, because those operations return
+row data. Upserts remain unsupported for member and policy scopes.
+Browser \`client\` grants still control exposed operations and fields; they
+cannot grant authority that the scope denies. Choose these permissions when
+declaring the table: changing an existing managed table's scope is refused.
 
 Creating a row requires an explicitly supplied, complete, non-null group key
 and membership in that group. Ownership alone cannot authorize placing new
@@ -1008,17 +1045,19 @@ parent's private owner, member, or owner-or-member scope. A parent's public
 read grant does not propagate to its tasks. A policy-scoped child declares its
 own browser operations and readable fields, and cannot declare \`publicRead\`.
 
-A create supplies the parent ID explicitly and requires access to that parent.
+A create supplies the parent ID explicitly and requires the parent scope to
+authorize that operation. A parent granting only read authority cannot grant
+child mutations.
 A move requires access to both the current and proposed parent, checked in the same database statement;
 browser moves also require the linking field in \`client.update\`. An ordinary
 field update keeps the current parent. Use \`set\` to change the parent ID;
-incrementing that linking field is refused. The policy defines one private audience
-for reads and writes; browser operation grants can narrow what that audience
-may do.
+incrementing that linking field is refused. Each child operation checks the
+parent's authority for that operation. Browser operation grants can narrow it
+further.
 
 This contract supports one parent hop through one scalar foreign key to an
 \`id()\` column. It does not support parent chains, arbitrary policy expressions,
-visitor policies, or policies for separate operations. Live subscriptions,
+visitor policies, or arbitrary per-operation policy expressions. Live subscriptions,
 composed transactions, and \`onConflict\` inserts over these policy scopes are
 refused. A relationship
 declaration alone never inherits access; \`parent({ via })\` is the explicit
@@ -1051,14 +1090,15 @@ Everything else is the **SQL database** — you write the SQL. \`db_migrate\`
 applies schema changes (a production target is bookmarked first — a marker
 in the database's 30-day history, not an undo, since restoring in place is
 not available; keep dumps and exports for recovery),
-\`db_scope_set\` declares access intent, and raw \`sw.db.query\` runs
-whatever you write. This is a sibling, not a legacy path: it is the right
-world for hand-tuned schemas, external identity models, and every query
-shape the structured builder does not express — JOINs, aggregates beyond
-count, GROUP BY, window functions — which stay SQL-world by design.
+\`db_scope_set\` declares access intent. On a SQL-mode project, ordinary
+\`sw.db.query\` / \`sw.db.batch\` run whatever you write. This is a sibling,
+not a legacy path: it is the right world for hand-tuned schemas and external
+identity models. A managed project instead uses declared structured operations
+by default; a raw read that they cannot express requires the explicit
+\`sw.db.server.query\` / \`sw.db.server.batch\` namespace.
 
-Raw SQL stays trusted-as-written and unscoped: bind your own ownership
-predicate. What it may DO depends on the project's write mode, below.
+Where raw SQL is available, it stays trusted-as-written and unscoped. Managed
+projects make that choice explicit through the \`sw.db.server\` read namespace.
 
 ## Managed mode — what a db/schema.ts does to raw SQL
 
@@ -1066,9 +1106,14 @@ Deploying a \`db/schema.ts\` that declares at least one table puts the whole
 PROJECT into managed mode, not just the declared tables. From that deploy on,
 inside deployed function code:
 
-- \`sw.db.query\` and \`sw.db.batch\` still READ anything, including tables
-  the schema file never mentions.
-- They cannot WRITE anything. Every write vector — INSERT, UPDATE, DELETE,
+- Ordinary \`sw.db.query\` and \`sw.db.batch\` calls are refused before
+  transport with \`MANAGED_RAW_SQL_REQUIRES_SERVER_AUTHORITY\` (403), even
+  when passed \`{ unscoped: true }\` or \`{ asServer: true }\`.
+- For a deliberate raw read, authorize the caller first and use
+  \`sw.db.server.query(sql, params?)\` or
+  \`sw.db.server.batch(statements)\`. These calls run as explicit server
+  authority, read as written, and do not apply declared row permissions.
+- Raw SQL cannot WRITE anything in managed mode. Every write vector — INSERT, UPDATE, DELETE,
   REPLACE, upsert, a mutating CTE, \`RETURNING\` on a write, DDL — is refused
   with \`MANAGED_RAW_WRITE_FORBIDDEN\` (403), on unmanaged tables too,
   including a table you create with \`db_migrate\` afterwards. The refusal is
@@ -1089,12 +1134,10 @@ Developer authority is untouched: \`db_query\`, \`db_batch\`,
 full raw SQL against the same database.
 
 The latch is one-way. There is no tool, flag, or setting that returns a
-project to SQL mode — error text that suggests switching the database back
-is naming an operation the platform does not expose. So decide before the
-first schema deploy: if your functions need raw SQL writes, don't deploy a
-\`db/schema.ts\` on that project. If one has already latched and you need
-raw writes back, that needs a platform change — file it with
-\`feedback({ ... })\`; there is no self-serve path.
+project to SQL mode. If functions need raw SQL writes, keep the project in SQL
+mode. A managed project uses structured writes, including
+\`sw.db.server.insert / update / remove / tx\` after application authorization
+for deliberate server-authority writes.
 
 ## Managed-schema error codes
 
@@ -1121,11 +1164,14 @@ raw writes back, that needs a platform change — file it with
 - \`SCHEMA_LOCKED\` (409, at query time) — raw DDL (ALTER / DROP / …)
   targeted a managed table. Same rule, enforced at the query boundary: edit
   \`db/schema.ts\` and deploy.
-- \`MANAGED_RAW_WRITE_FORBIDDEN\` (403, at query time) — a raw
-  \`sw.db.query\` / \`sw.db.batch\` WRITE ran in a project that is in
-  managed mode. Not retryable and not table-specific; see "Managed mode"
-  above. Use \`sw.db.insert\` / \`update\` / \`remove\`, or run the
-  statement with developer authority (\`db_query\` / \`db_batch\`).
+- \`MANAGED_RAW_SQL_REQUIRES_SERVER_AUTHORITY\` (403, before transport) —
+  ordinary \`sw.db.query\` / \`sw.db.batch\` ran in managed mode. Use declared
+  structured operations, or authorize the caller and use the matching
+  \`sw.db.server.query\` / \`sw.db.server.batch\` read.
+- \`MANAGED_RAW_WRITE_FORBIDDEN\` (403, at query time) — raw SQL attempted a
+  write in managed mode, including through \`sw.db.server.query\` /
+  \`sw.db.server.batch\`. Use structured writes, or run the statement with
+  developer authority (\`db_query\` / \`db_batch\`).
 
 ## What you get out of the box (the industry-standard checklist)
 
@@ -1134,9 +1180,9 @@ raw writes back, that needs a platform change — file it with
 - **Per-user scoping** — the structured builder
   (\`sw.db.from/count/insert/update/remove\`) auto-scopes a table declared
   user-owned to the request's verified user, with no user argument.
-  Raw SQL runs as written — write your own \`WHERE user_id = ?\`. See
+  Explicit \`sw.db.server\` calls bypass that scope only when chosen. See
   "Per-user scoping" below.
-- **ACID transactions** — \`sw.db.batch([…])\` runs all statements
+- **ACID transactions** — \`sw.db.tx([…])\` runs declared operations
   atomically. If statement 3 fails, 1 and 2 roll back. Same shape
   as Postgres \`BEGIN; …; COMMIT;\`.
 - **A documented Postgres-flavored syntax subset is accepted** — \`$1, $2\` placeholders,
@@ -1150,8 +1196,9 @@ raw writes back, that needs a platform change — file it with
   the only path.
 - **Direct writes** — ordinary writes go straight to the project's database.
   The database schedules writes to one project one at a time; the platform does
-  not add another write queue. Use \`sw.db.batch\` to make related statements
-  atomic and to reduce round trips. Transient backpressure can still be retried.
+  not add another write queue. Use \`sw.db.tx\` for related declared operations;
+  SQL-mode projects can use \`sw.db.batch\` for raw statements. Transient
+  backpressure can still be retried.
 - **Point-in-time recovery** — the underlying database keeps 30 days of
   history, and \`db_bookmark_create({ label })\` records named points around
   migrations. Restoring a project database in place is not available: a
@@ -1165,13 +1212,16 @@ raw writes back, that needs a platform change — file it with
 Full reviewer-facing depth: <https://somewhere.tech/llms.txt>.
 
 ## sw.db.query(sql, params?, options?)
-Run a SQL query from inside a deployed function. Always returns this exact shape:
+Run raw SQL from a deployed function in a SQL-mode project. In managed mode,
+ordinary \`sw.db.query\` is refused with
+\`MANAGED_RAW_SQL_REQUIRES_SERVER_AUTHORITY\`; use declared structured calls
+for ordinary access. The result shape is:
 
   {
     data: rows[],              // array of row objects (READ + RETURNING)
     error: null,               // never thrown; errors propagate as exceptions
     count: number,             // rows.length
-    last_row_id: number|null,  // INSERT rowid (writes only)
+    last_row_id: null,         // use the inserted row in data for its ID
     changes: number,           // rows touched (INSERT/UPDATE/DELETE)
   }
 
@@ -1180,7 +1230,7 @@ shape (\`{ data: { columns, rows, meta } }\`) because it surfaces the
 raw platform response — don't confuse them. Inside functions it's
 always \`r.data\`.
 
-// Read
+// SQL-mode project: raw read
 const users = await sw.db.query(
   'SELECT id, email FROM users WHERE active = ? ORDER BY created_at DESC LIMIT ?',
   [1, 20]
@@ -1188,16 +1238,36 @@ const users = await sw.db.query(
 // users.data = [{ id: 1, email: "alice@test.com" }, ...]
 // users.count = users.data.length
 
-// Write — only on a project with NO db/schema.ts. Once a schema file has
-// been deployed the project is in managed mode and every raw write from
-// function code is refused with MANAGED_RAW_WRITE_FORBIDDEN; use
-// sw.db.insert / update / remove there. See "Managed mode" above.
+// SQL-mode project: raw write
 const result = await sw.db.query(
   'INSERT INTO users (email, name) VALUES (?, ?) RETURNING *',
   ['bob@test.com', 'Bob']
 )
 // result.data = [{ id: 3, email: "bob@test.com", name: "Bob" }]
-// result.last_row_id = 3, result.changes = 1
+// result.data[0].id = 3, result.changes = 1; result.last_row_id = null
+
+## sw.db.server.query(sql, params?) / sw.db.server.batch(statements)
+
+These are the explicit raw-read escape hatch for managed functions. Authorize
+the caller before invoking them: the platform does not apply declared owner or
+member permissions to the SQL and does not infer your business rule.
+
+  const actor = await sw.auth.fromRequest(req);
+  if (actor.role !== 'admin') return new Response('Forbidden', { status: 403 });
+  const report = await sw.db.server.query(
+    'SELECT owner_id, COUNT(*) AS n FROM emails GROUP BY owner_id'
+  );
+
+Signatures:
+
+  sw.db.server.query(sql: string, params?: readonly unknown[]): Promise<SomewhereDbResult>
+  sw.db.server.batch(statements: readonly SomewhereRawDbStatement[]): Promise<SomewhereRawBatchResult[]>
+  type SomewhereRawDbStatement = { sql: string; params?: readonly unknown[] }
+
+Server raw calls accept no options. They use the managed runtime's read-only raw
+capability: reads run as written; writes and DDL are still refused. Use
+\`sw.db.server.insert / update / remove / tx\` for deliberate server-authority
+writes against declared tables.
 
 ## Whole numbers wider than JavaScript
 
@@ -1215,8 +1285,8 @@ themselves, so a write that touches a row holding a 64-bit id returns normally
 with the id intact (changed 2026-09-02 — before that it applied the write and
 then reported \`DATABASE_VALUE_TOO_LARGE\`).
 
-Raw \`sw.db.query\` runs exactly as written and is never rewritten, so cast the
-column yourself in your own RETURNING clause:
+On a SQL-mode project, raw \`sw.db.query\` runs exactly as written and is never
+rewritten, so cast the column yourself in your own RETURNING clause:
 
 // RETURNING * over a 64-bit column: applies the change, then reports
 // DATABASE_VALUE_TOO_LARGE. The write DID happen — do not retry it.
@@ -1315,19 +1385,20 @@ Per-user scoping lives on the structured builder, never on raw SQL. There is
 no \`{ user }\` option — the platform derives the user from the request's
 verified credential and scopes automatically.
 
-Raw \`sw.db.query\` / \`sw.db.batch\` run EXACTLY as written and are never
-rewritten for authorization. Write the ownership filter yourself (and note
-that on a project in managed mode the raw path reads but cannot write):
+On a managed project, ordinary \`sw.db.query\` / \`sw.db.batch\` are refused.
+If a raw read is truly required, choose server authority explicitly and enforce
+the caller policy in the function:
 
   const me = await sw.auth.fromRequest(req);
-  const emails = await sw.db.query(
+  const emails = await sw.db.server.query(
     'SELECT * FROM emails WHERE user_id = ? ORDER BY created_at DESC LIMIT 20',
     [me.id],
   );
 
-Passing \`{ user }\` to raw SQL is an error (\`RAW_SQL_CANNOT_BE_PLATFORM_SCOPED\`,
-403 before transport) — raw SQL is trusted server code, so a "scope this for me"
-option would be a silent full-table read if the platform ever failed to rewrite.
+Passing \`{ user }\` to ordinary raw SQL is an error
+(\`RAW_SQL_CANNOT_BE_PLATFORM_SCOPED\`, 403 before transport). Passing
+\`{ unscoped: true }\` or \`{ asServer: true }\` does not opt an ordinary raw
+call into server authority; use the \`sw.db.server\` namespace.
 
 For automatic scoping, use the structured builder on a table declared
 user-owned (an \`owner()\` table in \`db/schema.ts\`, or \`intent: 'scoped'\`
@@ -1351,9 +1422,10 @@ from the verified request identity. Fail-closed:
   violations are blocked.
 
 \`intent: 'server_only'\` marks a table for trusted server and developer access
-only. Bare \`sw.db.query\` calls in deployed functions pass; direct app-user
-access is rejected. Platform-managed tables such as \`auth_users\` are always
-treated as \`server_only\` and cannot be declared \`scoped\` or \`shared\`.
+only. Use \`{ asServer: true }\` for structured reads and \`sw.db.server.*\` for
+structured writes or deliberate raw reads; direct app-user access is rejected.
+Platform-managed tables such as \`auth_users\` are always treated as
+\`server_only\` and cannot be declared \`scoped\` or \`shared\`.
 
 ### Builder verbs and where-shapes
 
@@ -1543,32 +1615,30 @@ conflict-update applies only when the existing row belongs to the signed-in
 user — a unique-key collision with another user's row is a no-op, never a
 cross-user overwrite.
 
-### Cross-user reads — asServer, or raw SQL
+### Cross-user reads — explicit server authority
 
 \`sw.db.from(table, { asServer: true })\` and \`sw.db.count(table,
 { asServer: true })\` are the sanctioned way for trusted server code to read
 across users on a user-owned table — admin screens, aggregates, background
-jobs. Server mode never impersonates a request user, and the query is
-recorded as unscoped-marked, exactly like an intentionally unscoped raw
-query. It does not bypass the intent requirement (an undeclared table still
-refuses), it exists only on the read verbs, and it is never available to
-app-user browser requests. Without it, an owner-table read with no verified
+jobs. Server mode never impersonates a request user. It deliberately bypasses
+per-row ownership but does not bypass the intent requirement (an undeclared
+table still refuses). It exists only on the read verbs and is not a browser
+operation. Without it, an owner-table read with no verified
 signed-in user fails \`AUTH_REQUIRED\` (401) with an error naming
 \`{ asServer: true }\` as the sanctioned server-mode path.
 
-Raw SQL is the other honest path — trusted server code that runs exactly as
-written, so an intentional cross-user query (an admin report, a leaderboard,
-a JOIN) is simply raw SQL with no owner filter:
+For an admin report, leaderboard, JOIN, or other raw read that the structured
+grammar cannot express, authorize the caller and select the server namespace:
 
   // Admin endpoint: see every project's email count.
-  const allCounts = await sw.db.query(
+  const allCounts = await sw.db.server.query(
     'SELECT owner_id, COUNT(*) AS n FROM emails GROUP BY owner_id',
   );
 
-There is nothing to opt out of — the platform never scopes raw SQL. (\`{ unscoped:
-true }\` is still accepted as an inert marker for readability but changes
-nothing.) Raw SQL is refused for app-user browser requests; move the query into
-a server function.
+The platform never scopes or rewrites server-authority SQL. Ordinary raw calls
+cannot be upgraded with an option; \`{ unscoped: true }\` and
+\`{ asServer: true }\` are refused in managed mode. Raw SQL is also refused for
+app-user browser requests; place it in an authorized server function.
 
 ## Declaring and removing a scope (SQL-world tables)
 
@@ -1682,9 +1752,11 @@ provider results never are.
 Run multiple statements as one atomic transaction.
 If ANY statement fails, ALL roll back. All-or-nothing.
 
-Writes in a batch follow the same rule as \`sw.db.query\`: on a project in
-managed mode (any deployed \`db/schema.ts\`) they are refused with
-\`MANAGED_RAW_WRITE_FORBIDDEN\` and the reads still work.
+This ordinary raw batch is for SQL-mode projects. In managed mode it is refused
+with \`MANAGED_RAW_SQL_REQUIRES_SERVER_AUTHORITY\`. Use \`sw.db.tx\` or
+\`sw.db.server.tx\` for declared operations. \`sw.db.server.batch\` is the
+explicit managed raw-read batch; any write in it remains refused with
+\`MANAGED_RAW_WRITE_FORBIDDEN\`.
 
 const results = await sw.db.batch([
   { sql: 'DELETE FROM sessions WHERE user_id = ?', params: ['u_123'] },
@@ -6247,10 +6319,9 @@ The same rules apply to ingest jobs, which share this admission path.
 
 ## Job handler function
 A job handler is an ordinary deployed function, so the database rules are the
-ordinary ones: on a project with a \`db/schema.ts\` write with
-\`sw.db.insert\` / \`update\` / \`remove\`, because raw \`sw.db.query\`
-writes are refused there (\`MANAGED_RAW_WRITE_FORBIDDEN\`) and the job just
-retries and fails.
+ordinary ones: on a project with a \`db/schema.ts\`, use declared operations.
+Ordinary \`sw.db.query\` / \`sw.db.batch\` are refused there before transport;
+managed raw writes remain refused even through the explicit server namespace.
 
 // api/jobs/process-upload.ts
 export default async function(req, sw) {
@@ -6305,8 +6376,8 @@ export default async function(req, sw) {
   // On a project with NO db/schema.ts you can equally write raw SQL:
   //   await sw.db.query('INSERT INTO events (type, user_id) VALUES (?, ?)', [event, user_id])
   // On a project that HAS one, that same line returns 403
-  // MANAGED_RAW_WRITE_FORBIDDEN — background handlers are not exempt, and
-  // the failure only shows up as a failed job or run.
+  // MANAGED_RAW_SQL_REQUIRES_SERVER_AUTHORITY. Moving the INSERT to
+  // sw.db.server.query still returns MANAGED_RAW_WRITE_FORBIDDEN.
   return Response.json({ ok: true })
 }
 
@@ -6992,11 +7063,9 @@ call it after a deploy; on paid plans it also runs on promote and in a
 daily pass.
 
 Separately, every deploy also runs a quick regex scanner during
-compilation. It catches obvious
-footgun patterns like an authenticated handler running raw
-\`sw.db.query(...)\` against a user-owned table with no ownership filter
-(use the structured builder, which auto-scopes), and
-surfaces hits as advisory \`warnings\` in the deploy response. It is
+compilation. It may flag recognizable raw SQL and authorization footguns and
+surfaces hits as advisory \`warnings\` in the deploy response. It does not
+analyze every query or prove a function safe. It is
 NOT the security review — it's the cheap synchronous gate that ships
 to every project at every tier. Suppress per-file with a
 \`somewhere-security-allow\` comment.
@@ -8456,8 +8525,9 @@ Each entry names a topic. That topic, not this line, is the current contract.
   touches a row holding a 64-bit id (a Snowflake id, an imported \`bigint\`)
   returns normally. Before this it applied the write and then reported
   \`DATABASE_VALUE_TOO_LARGE\`, which read as a failed write that had in fact
-  succeeded. Raw \`sw.db.query\` is never rewritten, so cast the column yourself
-  in your own \`RETURNING\` clause. \`docs({ topic: 'sw.db' })\`.
+  succeeded. On a SQL-mode project raw \`sw.db.query\` is never rewritten, so
+  cast the column yourself in your own \`RETURNING\` clause.
+  \`docs({ topic: 'sw.db' })\`.
 - **2026-09-02 — cron has a plan minimum fire interval.** Creating or editing a
   schedule tighter than the plan allows is refused with
   \`CRON_SCHEDULE_TOO_FREQUENT\`; existing schedules are not re-checked and keep
@@ -9311,16 +9381,16 @@ themselves, gets wrong, and ships to production not knowing they got
 it wrong. The platform handles it.
 
 Why this matters: these are exactly the bugs that are easy to write
-and hard to catch by eye — the kind that ship to production without
-anyone noticing. The platform's security review catches this whole
-class automatically, on every deploy.
+and hard to catch by eye — the kind that can ship to production without
+anyone noticing. The bounded security review can flag recognizable instances;
+it does not prove every endpoint or arbitrary query safe.
 
 ---
 
 ## Security
 
 ### Auto-scoped database queries
-- **Platform:** the structured builder \`sw.db.from/insert/update/remove\` auto-scopes a declared \`scoped\` table to the request's verified user — no user argument, no owner filter to forget. Raw \`sw.db.query\` runs as written; the deploy scanner flags a raw query on a user-owned table with no ownership filter.
+- **Platform:** the structured builder \`sw.db.from/insert/update/remove\` auto-scopes a declared \`scoped\` table to the request's verified user — no user argument, no owner filter to forget. Ordinary raw SQL is refused in managed mode; an explicitly authorized \`sw.db.server.query\` read bypasses declared row permissions. The deploy scanner may flag recognizable risky shapes, but is not a proof of complete authorization.
 - **DIY:** hand-write row-level-security policies in Postgres, attach them to every table, debug why your prod queries return zero rows when the policy is too strict.
 - **What goes wrong:** the developer forgets the policy on one table. Every logged-in user can read every other user's data. Found in our own code on \`emails\`, \`drafts\`, and \`conversations\` before the auto-scope shipped.
 
@@ -9668,12 +9738,13 @@ Additions apply on their own; anything that would drop data is refused
 re-applying an unchanged file does nothing.
 
 **Deploying a schema file latches the project into managed mode, one way.**
-From that deploy on, a deployed function still READS with raw
-\`sw.db.query\`, but writes only through \`sw.db.insert\` /
-\`sw.db.update\` / \`sw.db.remove\` — a raw write from a function is
-refused with \`MANAGED_RAW_WRITE_FORBIDDEN\`. Developer-side raw SQL is
-untouched: \`db_query\`, \`db_migrate\`, the CLI and the dashboard keep
-full raw SQL against the same database.
+From that deploy on, ordinary \`sw.db.query\` / \`sw.db.batch\` are refused
+with \`MANAGED_RAW_SQL_REQUIRES_SERVER_AUTHORITY\`. Use declared structured
+operations normally. For a deliberate raw read, authorize the caller and use
+\`sw.db.server.query\` / \`sw.db.server.batch\`; declared row permissions do
+not apply to those calls, and managed raw writes remain refused. Developer-side
+raw SQL is untouched: \`db_query\`, \`db_migrate\`, the CLI and the dashboard
+keep full raw SQL against the same database.
 
 Want a hand-written schema instead — because your functions need raw SQL
 writes, or the shape is beyond what the file expresses? Then don't ship a
@@ -10460,12 +10531,14 @@ If a deploy genuinely failed silently, \`deploy_status({ project_id })\`
 returns the most recent timestamp — older than your last deploy means
 the deploy errored.
 
-## "MANAGED_RAW_WRITE_FORBIDDEN" on a write that used to work
+## Managed-mode raw SQL errors
 
-The project has a deployed \`db/schema.ts\`, so it is in managed mode and
-raw \`sw.db.query\` / \`sw.db.batch\` WRITES from function code are refused
-project-wide — including on tables the schema file never mentions, and
-including job, queue, and cron handlers.
+The project has a deployed \`db/schema.ts\`, so it is in managed mode.
+Ordinary \`sw.db.query\` / \`sw.db.batch\` fail before transport with
+\`MANAGED_RAW_SQL_REQUIRES_SERVER_AUTHORITY\`, including in job, queue, and
+cron handlers. Explicit \`sw.db.server.query\` / \`sw.db.server.batch\` reads
+run as written after your function authorizes the caller; a raw write through
+them fails with \`MANAGED_RAW_WRITE_FORBIDDEN\`.
 
 Fix: write with \`sw.db.insert\` / \`sw.db.update\` / \`sw.db.remove\` (the
 table needs a declared intent), or run the statement with developer
@@ -11785,10 +11858,10 @@ What's different from Postgres (most don't matter for app code):
   for typical app use.
 - **Per-user row scoping** — the structured builder
   \`sw.db.from/count/insert/update/remove\` on a declared user-owned table injects the
-  owner filter from the request's verified user automatically. (Raw
-  \`sw.db.query\` SQL is never rewritten — write your own \`WHERE\`.)
-- **Atomic batches** — \`sw.db.batch\` commits related statements together and
-  reduces round trips for bursts; ordinary single writes remain direct.
+  owner filter from the request's verified user automatically. Explicit
+  \`sw.db.server\` reads bypass that scope only when selected by the function.
+- **Atomic batches** — \`sw.db.tx\` and \`sw.db.server.tx\` commit related
+  declared operations together; ordinary single writes remain direct.
 - **Per-project quotas** — Free 1 GB / Builder 2 GB / Pro 10 GB / Scale 50 GB / Enterprise contract. Storage is enforced; reads are unmetered.
 
 ## When to use somewhere.tech's DB
@@ -12032,16 +12105,19 @@ const mine = await sw.db.from('notes');
 await sw.db.insert('notes', { body }); // owner column set by the platform
 \`\`\`
 
-Raw \`sw.db.query\` runs exactly as written and is never scoped for you — supply
-your own \`WHERE user_id = ?\` (and it is the escape hatch for JOINs, CTEs, and
-any multi-table shape the structured builder doesn't cover).
+On managed projects, ordinary \`sw.db.query\` / \`sw.db.batch\` are refused.
+For an intentional raw read, authorize the caller first and use
+\`sw.db.server.query\` / \`sw.db.server.batch\`; those calls are never scoped or
+rewritten for you.
 
 ## Can raw SQL bypass scoping?
 
 - **From browser code:** no. App-user database access is structured table
   access; raw SQL endpoints refuse app-user credentials.
 - **From your own server code:** only deliberately. A trusted server function
-  can pass \`{ unscoped: true }\` for an intentional cross-user operation.
+  must authorize the caller and select \`sw.db.server.query\` or
+  \`sw.db.server.batch\` for an intentional raw read. Options on ordinary raw
+  calls do not grant server authority in managed mode.
 - **Via the MCP \`db_query\` tool:** yes — but only with your developer
   key (smt_), never with an end-user JWT.
 
