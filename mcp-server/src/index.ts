@@ -7468,107 +7468,33 @@ Marketing email requires \`topic\`; recipient preferences, suppression, and the 
   {
     definition: {
     name: 'ai_complete',
-    description: `LLM chat completion, prompt model, GPT, Claude, Gemini, chat with AI, generate text, completion, inference — call an AI model through the somewhere.tech proxy. Supports multiple providers and models through a single unified API. Returns the model's response and cost breakdown.
+    description: `Call a platform AI model for a project. Start with ai_catalog for current models and prices; docs({topic:"sw.ai"}) explains the full contract.
 
-**Free models** (available to all users, no activation required):
-- \`provider: "workers-ai"\` — Kimi K2.6, Kimi K2.5, Gemma 4 26B, Llama 3.3 70B, Qwen3 30B, GLM-4.7 Flash, Llama 4 Scout, Mistral Small 3.1. These are frontier-quality open models running on our infrastructure at no cost to you. Rate limits (per user): Free tier 10/min and 200/day; Builder tier 200/min and 10,000/day.
+Omit both provider and model for free gpt-5.6-luna: 10 requests/minute and 200/day per project owner on every plan, 8,192 estimated input tokens including system/tools/history, and at most 1,024 output tokens. Standard service, reasoning disabled, 20-second provider deadline including the body. No paid fallback, BYOK charge, or automatic paid repair.
 
-**Paid models** (activation required in dashboard settings; rates by plan at /v1/pricing):
-- \`provider: "anthropic"\` — Claude Sonnet 4.6, Claude Opus 4.6, Claude Haiku 4.5
-- \`provider: "openai"\` — GPT-5.5, GPT-5.4 mini, GPT-5.4
-- \`provider: "xai"\` — Grok 4, Grok 4 Fast, Grok 3 Mini, Grok Code Fast 1
+Explicit provider/model selection uses that model's normal billing path, including explicitly selecting gpt-5.6-luna. Included workers-ai models retain their separate limits. Read ai_catalog instead of guessing model IDs.
 
-Cost breakdown is included in every response: \`api_cost\` (what the provider charges), \`platform_fee\` (the markup — tiered by plan; see /v1/pricing), \`total\`. Free models return \`$0.000000\` for all three.
+messages is a JSON-stringified array of {role,content}. For text use result.text; result.content contains text/tool_use blocks. With response_schema, inspect result.parsed and result.parse_error. Paid OpenAI/Anthropic responses may report pending cost: unknown is not zero, and you should not repeat a successful model call to settle accounting.
 
-**Example (free model):**
+Tool-capable models accept Anthropic-shaped tool definitions and tool_result messages. Pass conversation_id to retain history under the caller's verified subject; later turns send only new messages. History works across supported providers. Free-default overflow truncates history for the request and never runs paid summarization. For larger conversations and explicit paid compaction read docs({topic:"sw.ai"}).
 
-\`\`\`json
-{
-  "project_id": "my-saas",
-  "provider": "workers-ai",
-  "model": "@cf/meta/llama-4-scout-17b-16e-instruct",
-  "messages": [{ "role": "user", "content": "Summarize this text: ..." }],
-  "max_tokens": 1024
-}
-\`\`\`
-
-**Example (paid model):**
-
-\`\`\`json
-{
-  "project_id": "my-saas",
-  "provider": "anthropic",
-  "model": "claude-sonnet-4-6",
-  "system": "You are a helpful assistant.",
-  "messages": [{ "role": "user", "content": "Write a haiku about APIs" }],
-  "max_tokens": 256
-}
-\`\`\`
-
-**Tool use (Anthropic passthrough):**
-
-Send Anthropic tool definitions via \`tools\`; the response \`content\` array comes back with Anthropic's native blocks (text + tool_use). For multi-turn, append the assistant message and a user message with tool_result blocks — message \`content\` can be a string OR the full Anthropic content-block array.
-
-\`\`\`json
-{
-  "project_id": "my-saas",
-  "provider": "anthropic",
-  "model": "claude-sonnet-4-6",
-  "messages": [{ "role": "user", "content": "Find files containing TODO." }],
-  "tools": [
-    { "name": "fs_search", "description": "Search files for a literal substring.",
-      "input_schema": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"] } }
-  ]
-}
-// Response: { "content": [{ "type": "text", "text": "I'll search..." }, { "type": "tool_use", "id": "...", "name": "fs_search", "input": { "query": "TODO" } }], "text": "I'll search...", "stop_reason": "tool_use", ... }
-\`\`\`
-
-**Conversation history (Anthropic only):**
-
-Pass \`conversation_id\` to make the platform store and replay the chat. Prior turns are loaded from the project's database, prepended to your \`messages\`, and sent to the model. After the response returns, your new user message(s) and the assistant reply are saved under the same id. On the next call, send only the new user message — history is loaded server-side.
-
-Trim the loaded history with two optional caps: \`history_max_messages\` (default 50) and \`history_max_tokens\` (default 32000, char/4 estimate). Oldest user/assistant messages are dropped first; the new user messages in this call and the \`system\` prompt are never dropped. The model's full 200K window still applies on top — the smaller cap wins. \`conversation_truncated: true\` comes back in the response when any drop happened.
-
-Pass \`compaction: "summarize"\` to keep the dropped context instead of losing it. When messages overflow, they are folded into a rolling summary by Haiku and that summary is prepended to the system prompt on every subsequent call. One Haiku call per overflow event (billed normally, ~1¢). \`compaction: "truncate"\` (the default) is the cheaper option that just drops the oldest messages. The summarizer falls back to truncate on upstream error. \`conversation_summarized: true\` comes back when summarization actually ran.
-
-Use any string up to 128 chars as the id; if it doesn't exist, the conversation is created. List, fetch, fork, and delete via \`ai_conversation_list\` (pass a conversation_id to fetch one) / \`ai_conversation_fork\` / \`ai_conversation_delete\`. Works on every provider (anthropic, openai, xai, workers-ai). Not supported with \`stream: true\` yet.
-
-\`\`\`json
-// First call: client picks the id (any uuid will do)
-{ "project_id": "my-saas", "conversation_id": "c_abc123", "messages": [{ "role": "user", "content": "What's the capital of France?" }] }
-// Second call: send only the new turn — server loads the prior turns
-{ "project_id": "my-saas", "conversation_id": "c_abc123", "messages": [{ "role": "user", "content": "And of Spain?" }] }
-\`\`\`
-
-**Structured output (\`response_schema\`, Anthropic only):**
-
-Pass a JSON Schema object to get a validated, parsed response. The platform injects a synthetic tool with that schema as its input_schema and forces the model to call it. The response gains \`parsed\` (the object) and \`parse_error\` (null on success). One silent retry on validation failure. Mutually exclusive with caller-provided \`tools\` — handle the tool-use loop yourself if you need both.
-
-\`\`\`json
-{
-  "project_id": "my-saas",
-  "provider": "anthropic",
-  "messages": [{ "role": "user", "content": "Extract: 'Order #1234 for Alice, $49.99'" }],
-  "response_schema": "{\\"type\\":\\"object\\",\\"properties\\":{\\"order_id\\":{\\"type\\":\\"string\\"},\\"customer\\":{\\"type\\":\\"string\\"},\\"amount\\":{\\"type\\":\\"number\\"}},\\"required\\":[\\"order_id\\",\\"customer\\",\\"amount\\"]}"
-}
-// Response: { "parsed": { "order_id": "1234", "customer": "Alice", "amount": 49.99 }, "parse_error": null, ... }
-\`\`\``,
+Structured output: pass response_schema as a JSON-stringified JSON Schema, without caller tools or streaming.`,
     inputSchema: {
       type: 'object',
       properties: {
         project_id: { type: 'string', description: "Project ID (UUID), subdomain, or slug — resolved server-side, no UUID lookup needed. 'default' also works when the account has exactly one project; multi-project accounts must name one (the error lists them)." },
         messages: { type: 'string', description: 'JSON-stringified array of {role, content} messages. content is a string OR Anthropic content-block array (for tool_result multi-turn).' },
-        provider: { type: 'string', description: 'Optional. "anthropic" (default, paid), "openai" (paid GPT), "xai" (paid Grok), or "workers-ai" (free, rate-limited).' },
-        model: { type: 'string', description: 'Optional model ID. For anthropic defaults to claude-sonnet-4-6; for openai pass gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.4-nano, etc.; for workers-ai defaults to @cf/meta/llama-4-scout-17b-16e-instruct; for xai pass one of grok-4, grok-4-fast, grok-3-mini, grok-code-fast-1.' },
-        max_tokens: { type: 'number', description: 'Optional max output tokens. Defaults to 1024. Anthropic capped at the model native limit (Sonnet 4.6: 128000, Sonnet 4.5: 64000, Opus 4.6: 32000, Haiku 4.5: 16384). xAI native limits: grok-4 65536, grok-4-fast / grok-code-fast-1 32000, grok-3-mini 16384. workers-ai free tier capped at 4096. Set higher than the default for code generation to avoid building continuation loops.' },
+        provider: { type: 'string', description: 'Optional provider from ai_catalog. Omit both provider and model for free starter chat. Explicit providers use their normal pricing.' },
+        model: { type: 'string', description: 'Optional concrete model ID or alias from ai_catalog. Explicit selection uses the paid path unless cataloged as included.' },
+        max_tokens: { type: 'number', description: 'Optional output-token budget, default 1024. Free default capped at 1024; explicit models have their catalog limits.' },
         system: { type: 'string', description: 'Optional system prompt' },
         tools: { type: 'string', description: 'Optional JSON-stringified Anthropic tool definitions. Passed through unchanged.' },
         tool_choice: { type: 'string', description: 'Optional JSON-stringified Anthropic tool_choice directive (e.g. {"type":"auto"} or {"type":"tool","name":"fs_search"}).' },
-        response_schema: { type: 'string', description: 'Optional JSON-stringified JSON Schema. When set on provider:"anthropic", the response includes a validated `parsed` object. Mutually exclusive with `tools` and `stream`.' },
+        response_schema: { type: 'string', description: 'Optional JSON-stringified JSON Schema. Inspect parsed and parse_error in the response. Cannot combine with tools or stream. Free default makes no repair request.' },
         conversation_id: { type: 'string', description: 'Optional. Persist this turn under a conversation id (any string up to 128 chars). Prior turns are loaded server-side and replayed on every provider — conversation history works on anthropic, workers-ai, and xai alike.' },
         history_max_messages: { type: 'number', description: 'Optional. Cap on the number of stored history messages prepended on this call. Oldest dropped first. Default 50. Only applies when conversation_id is set.' },
-        history_max_tokens: { type: 'number', description: 'Optional. Cap on combined (system + history + new) input tokens (char/4 estimate). Oldest history dropped first. Default 32000. Only applies when conversation_id is set.' },
-        compaction: { type: 'string', description: 'Optional. "truncate" (default) drops the oldest messages when the caps are hit. "summarize" folds them into a rolling Haiku summary that is prepended to the system prompt on every subsequent call — costs one extra Haiku request per overflow but preserves context. Only applies when conversation_id is set.' },
+        history_max_tokens: { type: 'number', description: 'Optional retained-history token budget (estimated), default 32000. New messages/system are counted against the overall input cap too.' },
+        compaction: { type: 'string', description: 'Optional truncate (default) or summarize. Free default always truncates; explicit paid summarization can incur an additional model charge. See docs sw.ai.' },
       },
       required: ['project_id', 'messages'],
     },
@@ -7580,7 +7506,7 @@ Pass a JSON Schema object to get a validated, parsed response. The platform inje
     visibility: 'authenticated',
     paid: false,
     surfaces: ["full","connector"],
-    protocol: { surfaceDescriptions: { connector: "Generate a text response using a platform AI model. Usage is charged to the project." }, surfaceAnnotations: { connector: {"title":"Ai Complete","readOnlyHint":false,"destructiveHint":true} },  },
+    protocol: { surfaceDescriptions: { connector: "Generate a text response. Omit provider/model for the capped free starter; explicit paid models charge project usage." }, surfaceAnnotations: { connector: {"title":"Ai Complete","readOnlyHint":false,"destructiveHint":true} },  },
     execute: async (runtime, args) => {
       const { fetcher, authHeader } = runtime;
       let result: ToolUpstreamResult;

@@ -5062,19 +5062,23 @@ that speaks the offer/answer SDP dance works.
 
 ## Default model recommendation
 
-**For demos and production: pin \`claude-sonnet-4-6\`.** It's fast
-enough and the response quality is what makes a demo land.
+Omit both \`provider\` and \`model\` to start with free
+\`gpt-5.6-luna\`. No API key or balance is needed. The allowance is
+10 requests/minute and 200/day per project owner, across their projects,
+on every plan. Each call accepts at most 8,192 estimated input tokens
+(including system text, tools and retained history) and 1,024 output tokens.
 
-**Free default: \`deepseek-v4-flash\`.** If you omit both \`provider\`
-and \`model\`, the platform uses this model with no activation and no
-user billing. It is still rate-limited and input/output capped.
+The free path uses standard service with reasoning disabled, a 20-second
+provider deadline including the response body, and no paid fallback.
+A limit returns a structured error; it never silently charges your balance.
+Use \`r.text\` for text, \`r.content\` for content blocks, and
+\`r.parsed\` when requesting \`response_schema\`.
 
-**\`provider: 'workers-ai'\` opt-in:** pass that provider and optionally
-\`model: '${WORKERS_AI_DEFAULT_FREE_MODEL}'\`. This path remains
-available for smoke tests and existing callers.
-
-When you're showing the app to a customer, pin Sonnet. When you're
-iterating locally or testing a flow, the free default is fine.
+For larger requests or a different model, choose an explicit provider/model
+from \`ai_catalog\`. Explicit \`provider: 'openai'\` or
+\`model: 'gpt-5.6-luna'\` selects the paid path even for the same model.
+Explicit \`provider: 'workers-ai'\` retains its separate included-model
+limits. Free responses use platform credentials even if you configured BYOK.
 
 ## Provider credentials (optional BYOK)
 
@@ -5305,7 +5309,7 @@ return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } }
 //
 // On every other provider stream is NOT honoured:
 //   xai / openai / deepseek / deepinfra — and the free default
-//     (deepseek-v4-flash, what you get when you pass no provider) — reject
+//     (gpt-5.6-luna, what you get when you omit provider/model) — reject
 //     it with VALIDATION_ERROR "stream=true is not supported on the
 //     <provider> provider yet." Uncaught in a handler that surfaces as a
 //     500, so branch on the provider before you set the flag.
@@ -5329,9 +5333,8 @@ even mix providers under the same conversation_id; whichever model you
 call next sees the retained history. Compaction configuration and billing
 are described below. The only field still pinned to anthropic is stream: \`stream: true\` produces
 an SSE body only on \`provider: 'anthropic'\`. xai, openai, deepseek and
-deepinfra (and the free default) reject it with VALIDATION_ERROR; workers-ai
-ignores it and returns the ordinary JSON result object, so a handler that
-wraps that in a text/event-stream Response ships a mislabelled JSON blob.
+deepinfra, workers-ai and the free default reject it with VALIDATION_ERROR.
+Do not label an ordinary JSON result as a text/event-stream Response.
 \`stream: true\` cannot be combined with conversation_id or response_schema.
 The anthropic stream is generated first and replayed as one complete SSE
 payload today, so the frames arrive together rather than token by token.
@@ -5369,7 +5372,7 @@ await sw.ai.chat({
   model: 'claude-sonnet-4-6',
   conversation_id: 'c_abc',
   history_max_messages: 20,    // default 50
-  history_max_tokens: 4000,    // default 8000 (char/4 estimate)
+  history_max_tokens: 4000,    // default 32000 (char/4 estimate)
   messages: [{ role: 'user', content: 'next question' }]
 })
 
@@ -5650,8 +5653,8 @@ caller-provided \`tools\` and with \`stream\`.
 
 The response gains two fields: \`parsed\` (the validated object, or null
 on failure) and \`parse_error\` (null on success, otherwise a short reason
-string). On validation failure the platform retries once silently before
-giving up — no exceptions are thrown so your handler can branch. On
+string). The free default makes one request and reports parse failure
+without a repair call. Other supported paths may retry once before giving up — no exceptions are thrown so your handler can branch. On
 \`provider: 'anthropic'\` that retry is one separate model invocation with
 its own balance reservation, started only after the first call's cost has
 settled: if the first cost is pending there is no retry; if the balance
@@ -5662,10 +5665,11 @@ together, with no second markup.
 
 ## Free chat
 
-Default pick — omit provider/model and the platform serves
-\`deepseek-v4-flash\`. It is free to the user, no activation required,
-and bounded by the free AI rate limits plus 8K input / 4K output caps.
-Use 1024 max_tokens for most prompts.
+Default pick — omit both provider/model and the platform serves
+\`gpt-5.6-luna\`, free to the user. Every plan shares the same owner-level
+allowance: 10 requests/minute, 200/day, 8,192 estimated input tokens including
+system/tools/history, and 1,024 output tokens per call. No paid fallback or
+automatic paid repair request. Set \`max_tokens\` to 1,024 or less.
 
 The \`provider: 'workers-ai'\` path remains an explicit opt-in.
 Current non-reasoning chat models from that provider are
@@ -5711,10 +5715,10 @@ Reach for reasoning models only on multi-step problems (math, code
 generation with planning, complex tool-use loops) where the extra
 thinking measurably improves the answer.
 
-Rate limits (per user, on the free DeepSeek default and free
-\`provider: 'workers-ai'\` models):
-  Free tier:    10 req/min, 200 req/day
-  Builder tier: 200 req/min, 10,000 req/day
+Free default limits on every plan: 10 req/min, 200 req/day per owner.
+Explicit \`provider: 'workers-ai'\` limits remain: Free tier 10 req/min,
+200 req/day; paid tiers 200 req/min, 10,000 req/day. These paths share the
+owner's free-usage counter; switching providers does not reset usage.
 
 ## Other AI surfaces — also on sw.ai
 
@@ -9926,21 +9930,11 @@ Porting an app → docs({ topic: 'migration-supabase' }).
 
 ## Default model recommendation
 
-For demos and production: pin **\`claude-sonnet-4-6\`**.
-\`\`\`typescript
-await sw.ai.chat({
-  provider: 'anthropic',
-  model: 'claude-sonnet-4-6',
-  messages: [...]
-})
-\`\`\`
-
-When you omit provider/model, the free default is \`deepseek-v4-flash\`:
-no activation, no user billing, rate-limited and capped. Explicit
-\`provider: 'workers-ai'\` remains available for included models; start
-with \`${WORKERS_AI_DEFAULT_FREE_MODEL}\` only when you specifically want
-that provider. For anything a user (or customer) will see, pin Sonnet —
-it costs cents and the response quality is what makes the demo land.
+Start with \`await sw.ai.chat({ messages: [...] })\`: omit both provider
+and model for free \`gpt-5.6-luna\`. The allowance is 10 requests/minute,
+200/day per owner on every plan, with 8,192 estimated input and 1,024 output
+tokens per call. There is no paid fallback. For larger requests or another
+model, choose an explicit provider/model from \`ai_catalog\`.
 
 ## Available docs topics
 
@@ -11167,9 +11161,9 @@ prior messages server-side — your handler stays stateless.
 ## Variations
 
 - **Structured output instead of tool-use:** pass \`response_schema\`
-  and read \`r.parsed\`. One silent retry on parse failure.
+  and read \`r.parsed\`. The free default makes no repair call on parse failure.
 - **Free model:** omit \`provider\` and \`model\` to use
-  \`deepseek-v4-flash\` — no activation required, rate-limited and
+  \`gpt-5.6-luna\` — no activation required, rate-limited and
   capped, but free to the user.
 - **Meaning-based knowledge lookup:** create an index once with
   \`search_index_create\`, then \`search_upsert\` whenever a knowledge row
