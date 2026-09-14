@@ -169,7 +169,11 @@ wrong Origin returns \`ORIGIN_REQUIRED\` or \`DATA_ORIGIN_FORBIDDEN\`. Errors ar
 \`DataError\` with \`status\` and \`code\`:
 \`AUTH_REQUIRED\`, \`DATA_ACCESS_DENIED\`, \`DATA_CONTRACT_MISMATCH\`,
 \`DATA_IDENTITY_MISMATCH\`, \`DATA_INPUT_INVALID\`, \`DATA_INPUT_TOO_LARGE\`,
-\`DATA_OPERATION_INVALID\`, \`DATA_VALUE_INVALID\`.
+\`DATA_OPERATION_INVALID\`, \`DATA_VALUE_INVALID\`, \`DATA_CONFLICT\`.
+A create or update that conflicts with a declared unique value returns
+\`DataError\` with status 409 and code \`DATA_CONFLICT\`. Map that code to your
+app's duplicate-value message; retrying the same values will not fix it.
+The error does not identify the existing row or disclose its fields.
 
 Direct HTTP to the data endpoint has exactly the same restrictions; the client
 is convenience, not the boundary.
@@ -875,11 +879,13 @@ is no separate schema-apply command. Until a deploy runs,
 \`sw.db.from('your_table')\` fails with \`TABLE_INTENT_REQUIRED\` because a file
 on disk cannot declare the table to the platform by itself.
 
-The file is parsed as a declaration, not executed: every value must be a
-literal, every column an imported helper call, and the grammar is strict.
+The file is parsed as a declaration, not executed: use literal values and
+supported declaration helpers. Imports from \`somewhere/db\` are recommended
+for editor tooling, but the schema reader does not resolve imports. A missing
+\`owner\` import alone does not invalidate an otherwise valid declaration.
 Trailing commas are accepted, inside option objects and after the final
-argument of a call. Computed values, spreads and imports other than
-\`somewhere/db\` are refused with a message that names the line.
+argument of a call. Computed values, spreads and unknown helper calls are
+refused with a message that names the line.
 
   import { schema, table, id, text, integer, boolean, timestamp, json, owner, member, shared, serverOnly } from 'somewhere/db';
 
