@@ -7476,7 +7476,7 @@ Explicit provider/model selection uses that model's normal billing path, includi
 
 messages is a JSON-stringified array of {role,content}. For text use result.text; result.content contains text/tool_use blocks. With response_schema, inspect result.parsed and result.parse_error. Paid OpenAI/Anthropic responses may report pending cost: unknown is not zero, and you should not repeat a successful model call to settle accounting.
 
-Tool-capable models accept Anthropic-shaped tool definitions and tool_result messages. Pass conversation_id to retain history under the caller's verified subject; later turns send only new messages. History works across supported providers. Free-default overflow truncates history for the request and never runs paid summarization. For larger conversations and explicit paid compaction read docs({topic:"sw.ai"}).
+Tool-capable models accept Anthropic-shaped tool definitions and tool_result messages. Pass a caller-chosen conversation_id together with subject_type and subject_id to retain history under that scope; reuse that caller key on subsequent ai_complete calls. Use the same scope with ai_conversation_list, ai_conversation_delete, and ai_conversation_fork. Later turns send only new messages. History works across supported providers. Free-default overflow truncates history for the request and never runs paid summarization. For larger conversations and explicit paid compaction read docs({topic:"sw.ai"}).
 
 Structured output: pass response_schema as a JSON-stringified JSON Schema, without caller tools or streaming.`,
     inputSchema: {
@@ -7491,7 +7491,9 @@ Structured output: pass response_schema as a JSON-stringified JSON Schema, witho
         tools: { type: 'string', description: 'Optional JSON-stringified Anthropic tool definitions. Passed through unchanged.' },
         tool_choice: { type: 'string', description: 'Optional JSON-stringified Anthropic tool_choice directive (e.g. {"type":"auto"} or {"type":"tool","name":"fs_search"}).' },
         response_schema: { type: 'string', description: 'Optional JSON-stringified JSON Schema. Inspect parsed and parse_error in the response. Cannot combine with tools or stream. Free default makes no repair request.' },
-        conversation_id: { type: 'string', description: 'Optional. Persist this turn under a conversation id (any string up to 128 chars). Prior turns are loaded server-side and replayed on every provider — conversation history works on anthropic, workers-ai, and xai alike.' },
+        conversation_id: { type: 'string', description: 'Optional caller-chosen chat key (any string up to 128 chars). Reuse this key on subsequent ai_complete calls to load prior turns. To read, delete, or fork the saved record, first call ai_conversation_list without conversation_id and use its returned id.' },
+        subject_type: { type: 'string', description: "Required with conversation_id. Conversation owner type; use 'app_user' for signed-in app users. Reuse the same scope for conversation reads." },
+        subject_id: { type: 'string', description: 'Required with conversation_id. Conversation owner id. Reuse the same scope for conversation reads.' },
         history_max_messages: { type: 'number', description: 'Optional. Cap on the number of stored history messages prepended on this call. Oldest dropped first. Default 50. Only applies when conversation_id is set.' },
         history_max_tokens: { type: 'number', description: 'Optional retained-history token budget (estimated), default 32000. New messages/system are counted against the overall input cap too.' },
         compaction: { type: 'string', description: 'Optional truncate (default) or summarize. Free default always truncates; explicit paid summarization can incur an additional model charge. See docs sw.ai.' },
@@ -7511,6 +7513,16 @@ Structured output: pass response_schema as a JSON-stringified JSON Schema, witho
       const { fetcher, authHeader } = runtime;
       let result: ToolUpstreamResult;
       {
+        if (args.conversation_id !== undefined && (
+          typeof args.subject_type !== 'string' || !args.subject_type.trim()
+          || typeof args.subject_id !== 'string' || !args.subject_id.trim()
+        )) {
+          return { status: 400, data: {
+            ok: false,
+            error: 'VALIDATION_ERROR',
+            message: 'ai_complete requires both subject_type and subject_id when conversation_id is supplied. Use the same scope with ai_conversation_list, ai_conversation_delete, and ai_conversation_fork.',
+          } };
+        }
         const messages = parseJsonArg(args.messages, 'messages');
         const tools = typeof args.tools === 'string'
           ? (() => { try { return JSON.parse(args.tools as string); } catch { return undefined; } })()
@@ -7532,6 +7544,8 @@ Structured output: pass response_schema as a JSON-stringified JSON Schema, witho
           payload.response_schema = parseJsonArg(args.response_schema, 'response_schema');
         }
         if (args.conversation_id !== undefined) payload.conversation_id = args.conversation_id;
+        if (args.subject_type !== undefined) payload.subject_type = args.subject_type;
+        if (args.subject_id !== undefined) payload.subject_id = args.subject_id;
         if (args.history_max_messages !== undefined) payload.history_max_messages = args.history_max_messages;
         if (args.history_max_tokens !== undefined) payload.history_max_tokens = args.history_max_tokens;
         if (args.compaction !== undefined) payload.compaction = args.compaction;
@@ -7551,7 +7565,7 @@ Structured output: pass response_schema as a JSON-stringified JSON Schema, witho
         project_id: { type: 'string', description: "Project ID (UUID), subdomain, or slug — resolved server-side, no UUID lookup needed. 'default' also works when the account has exactly one project; multi-project accounts must name one (the error lists them)." },
         subject_type: { type: 'string', description: "Conversation owner type. Use 'app_user' for signed-in app users." },
         subject_id: { type: 'string', description: 'Conversation owner id. The server applies this scope to both list and single-conversation reads.' },
-        conversation_id: { type: 'string', description: 'Optional. Pass the id you used with ai_complete to fetch one conversation with its messages. Omit to list all conversations.' },
+        conversation_id: { type: 'string', description: 'Optional. Pass a saved record id returned by ai_conversation_list to fetch that conversation with its messages. Omit to list all conversations.' },
         include_summarized: { type: 'boolean', description: 'Optional. Only applies when fetching one conversation: when true, also returns messages folded into the summary (the full transcript). Default false.' },
         limit: { type: 'number', description: 'Optional. Only applies when listing. Max conversations to return. Default 50, max 200.' },
       },
@@ -7598,7 +7612,7 @@ Structured output: pass response_schema as a JSON-stringified JSON Schema, witho
         project_id: { type: 'string', description: "Project ID (UUID), subdomain, or slug — resolved server-side, no UUID lookup needed. 'default' also works when the account has exactly one project; multi-project accounts must name one (the error lists them)." },
         subject_type: { type: 'string', description: "Conversation owner type. Use 'app_user' for signed-in app users." },
         subject_id: { type: 'string', description: 'Conversation owner id.' },
-        conversation_id: { type: 'string', description: 'The id to delete.' },
+        conversation_id: { type: 'string', description: 'The saved record id returned by ai_conversation_list.' },
       },
       required: ['project_id', 'subject_type', 'subject_id', 'conversation_id'],
     },
@@ -7632,7 +7646,7 @@ Structured output: pass response_schema as a JSON-stringified JSON Schema, witho
         project_id: { type: 'string', description: "Project ID (UUID), subdomain, or slug — resolved server-side, no UUID lookup needed. 'default' also works when the account has exactly one project; multi-project accounts must name one (the error lists them)." },
         subject_type: { type: 'string', description: "Conversation owner type. Use 'app_user' for signed-in app users." },
         subject_id: { type: 'string', description: 'Conversation owner id.' },
-        conversation_id: { type: 'string', description: 'The source id to branch from.' },
+        conversation_id: { type: 'string', description: 'The source record id returned by ai_conversation_list.' },
         new_conversation_id: { type: 'string', description: 'The new id for the forked copy. 1-128 chars; must differ from the source.' },
         up_to_message_id: { type: 'number', description: 'Optional. Numeric message id (from ai_conversation_list with a conversation_id) to truncate the copy at, inclusive. Omit to copy the full history.' },
       },

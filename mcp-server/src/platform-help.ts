@@ -5328,6 +5328,12 @@ messages, and sent to the model. After the response, your new user
 message(s) and the assistant reply are saved under the same id. Next
 call: send only the new user turn.
 
+In app functions, sw.ai.chat derives the verified request user when one is
+available; the scoped AI view below also supports session-owned conversations.
+Through MCP, ai_complete requires subject_type and subject_id whenever you
+supply conversation_id. Use the same pair to list, read, delete, or fork that
+conversation. A conversation id alone does not identify its owner.
+
 Works on every provider — anthropic, openai, xai, workers-ai. You can
 even mix providers under the same conversation_id; whichever model you
 call next sees the retained history. Compaction configuration and billing
@@ -5412,8 +5418,14 @@ ai_conversation_list (pass a conversation_id to fetch one) /
 ai_conversation_delete, or
 the matching REST endpoints (GET /v1/ai/conversations,
 GET /v1/ai/conversations/:id, DELETE /v1/ai/conversations/:id — all take
-?project_id=). Pass include_summarized=1 on the get endpoint to also
-see messages already folded into the summary.
+?project_id=, subject_type, and subject_id). Use the same subject_type and
+subject_id supplied to ai_complete when the conversation was created.
+For MCP and REST history operations, list first and use the returned record
+id to read, delete, or fork. Keep your original caller-chosen conversation_id
+for subsequent ai_complete turns; it is a different identifier from the stored
+record id. The scoped runtime client handles that translation for you.
+Pass include_summarized=1 on the get endpoint to also see messages already
+folded into the summary.
 
 Summarized rows remain stored. Conversation reads exclude them by default;
 pass include_summarized=1 to retrieve the complete retained transcript.
