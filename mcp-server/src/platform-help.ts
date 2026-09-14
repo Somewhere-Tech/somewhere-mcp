@@ -10549,9 +10549,10 @@ Full contract: \`docs({ topic: 'sw.db' })\`, "Managed mode".
 ## "AUTH_REQUIRED" from sw.db.from / insert / count on an owner() table
 
 The table is user-owned, so the platform scopes it to a principal, and this
-request had none: no signed-in user, and identity-without-login is off for
-this project, so signed-out visitors are not given one either. Check which
-mode the project is in with \`db_scope_list\` (\`owner_principal\`).
+request had none: there is no signed-in user, and this table does not declare
+\`owner({ visitors: true })\`, which is the declaration that accepts a stable
+anonymous visitor identity. Inspect the table in \`db_scope_list\`; its
+\`owner_principal\` summary describes both declaration forms.
 
 Fix: send the request signed in (same-origin session cookie, or
 \`Authorization: Bearer <app-user token>\`); or, after the handler independently
@@ -11075,20 +11076,20 @@ your project's database, and answers grounded questions. Uses
 
 ## Database schema
 
-  // Apply this DDL ONCE as the developer — db_migrate MCP tool / CLI /
-  // dashboard — BEFORE deploying functions. Never run DDL from inside a
-  // handler: it's un-versioned, runs per-request, and new owner_id/user_id
-  // tables miss the per-user data protections until scoped. Functions
-  // read/write rows with sw.db.query.
-  db_migrate({ project_id, sql: \`
-    CREATE TABLE IF NOT EXISTS knowledge (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      body TEXT NOT NULL,
-      created_at INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS knowledge_title ON knowledge(title);
-  \` })
+  // db/schema.ts — deploy this declaration with the app source.
+  import { schema, table, id, text, timestamp, owner } from 'somewhere/db'
+
+  export default schema({
+    knowledge: table({
+      id: id({ uuid: true }),
+      title: text(),
+      body: text(),
+      created_at: timestamp({ default: 'now' }),
+    }, {
+      scope: owner(),
+      indexes: [['title']],
+    }),
+  })
 
 ## Function: api/chat.ts
 
@@ -11123,10 +11124,16 @@ your project's database, and answers grounded questions. Uses
       if (r.stop_reason !== 'tool_use') return Response.json({ reply: r.text })
 
       const toolUse = r.content.find(b => b.type === 'tool_use')
-      const rows = await sw.db.query(
-        'SELECT id, title, body FROM knowledge WHERE user_id = ? AND (title LIKE ? OR body LIKE ?) LIMIT 5',
-        [user.id, \`%\${toolUse.input.query}%\`, \`%\${toolUse.input.query}%\`],
-      )
+      const rows = await sw.db.from('knowledge', {
+        columns: ['id', 'title', 'body'],
+        where: {
+          $or: [
+            { title: { contains: toolUse.input.query } },
+            { body: { contains: toolUse.input.query } },
+          ],
+        },
+        limit: 5,
+      })
 
       messages = [
         { role: 'assistant', content: r.content },
@@ -11169,44 +11176,27 @@ Related topics: \`sw.ai\`, \`sw.auth\`, \`sw.db\`, \`search\`.
 
   'recipe-booking': `# Recipe — Booking / calendar app
 
-Calendar slot reservation with availability hints, atomic holds, payment,
-and confirmation emails. Each appointment locks a provider calendar range
-with \`sw.calendar\` before checkout; the app database mirrors customer-facing
-booking details.
+Calendar slot reservation with availability hints and payment checkout. Each
+appointment locks a provider calendar range with \`sw.calendar\` and binds that
+hold to checkout. This recipe stops before app-level fulfillment.
 
 ## Database schema
 
-  // Apply this DDL ONCE as the developer — db_migrate MCP tool / CLI /
-  // dashboard — BEFORE deploying functions. Never run DDL from inside a
-  // handler: it's un-versioned, runs per-request, and new owner_id/user_id
-  // tables (like providers below) miss the per-user data protections until
-  // scoped. Functions read/write rows with sw.db.query.
-  db_migrate({ project_id, sql: \`
-    CREATE TABLE IF NOT EXISTS providers (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,                    -- sw.auth subject id
-      name TEXT NOT NULL,
-      slot_minutes INTEGER NOT NULL DEFAULT 60,
-      price_cents INTEGER NOT NULL DEFAULT 0,
-      timezone TEXT NOT NULL DEFAULT 'UTC',
-      created_at INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS bookings (
-      id TEXT PRIMARY KEY,
-      provider_id TEXT NOT NULL,
-      customer_email TEXT NOT NULL,
-      starts_at INTEGER NOT NULL,
-      ends_at INTEGER NOT NULL,
-      status TEXT NOT NULL DEFAULT 'hold',      -- hold | pending_payment | confirmed | cancelled | expired
-      calendar_reservation_id TEXT NOT NULL,
-      checkout_session_id TEXT,
-      stripe_payment_intent TEXT,
-      hold_expires_at INTEGER,
-      created_at INTEGER NOT NULL,
-      confirmed_at INTEGER
-    );
-    CREATE INDEX IF NOT EXISTS booking_window ON bookings(provider_id, starts_at, ends_at);
-  \` })
+  // db/schema.ts — trusted functions own provider configuration; browsers
+  // reach only the narrow availability and booking handlers below.
+  import { schema, table, id, text, integer, timestamp, serverOnly } from 'somewhere/db'
+
+  export default schema({
+    providers: table({
+      id: id({ uuid: true }),
+      user_id: text(),
+      name: text(),
+      slot_minutes: integer({ default: 60 }),
+      price_cents: integer({ default: 0 }),
+      timezone: text({ default: 'UTC' }),
+      created_at: timestamp({ default: 'now' }),
+    }, { scope: serverOnly() }),
+  })
 
 ## Function: api/availability.ts — list candidate slots in a day
 
@@ -11216,8 +11206,10 @@ booking details.
     const dayStart = parseInt(url.searchParams.get('day_start'))   // unix ms
     const dayEnd = dayStart + 24 * 3600 * 1000
 
-    const { data: providers } = await sw.db.query(
-      'SELECT slot_minutes FROM providers WHERE id = ?', [providerId])
+    // provider ids identify the public booking calendar; expose only timing.
+    const { data: providers } = await sw.db.from('providers', {
+      columns: ['slot_minutes'], where: { id: providerId }, limit: 1, asServer: true,
+    })
     if (!providers[0]) return Response.json({ error: 'not_found' }, { status: 404 })
 
     const availability = await sw.calendar.availability({
@@ -11239,9 +11231,12 @@ booking details.
 
   export default async (req, sw) => {
     const { provider_id, customer_email, starts_at } = await req.json()
-    const id = crypto.randomUUID()
-    const { data: providers } = await sw.db.query(
-      'SELECT slot_minutes, price_cents, timezone FROM providers WHERE id = ?', [provider_id])
+    // This public endpoint deliberately reads the selected provider's booking
+    // terms, then exposes only the checkout URL and hold expiry.
+    const { data: providers } = await sw.db.from('providers', {
+      columns: ['slot_minutes', 'price_cents', 'timezone'],
+      where: { id: provider_id }, limit: 1, asServer: true,
+    })
     const provider = providers[0]
     if (!provider) return Response.json({ error: 'not_found' }, { status: 404 })
 
@@ -11257,7 +11252,6 @@ booking details.
           timezone: provider.timezone,
         },
         ttl_seconds: 45 * 60,
-        metadata: { booking_id: id },
       })
     } catch (err) {
       if (err?.code === 'CALENDAR_CONFLICT') {
@@ -11267,243 +11261,124 @@ booking details.
     }
 
     try {
-      await sw.db.query(
-        \`INSERT INTO bookings
-           (id, provider_id, customer_email, starts_at, ends_at, status,
-            calendar_reservation_id, hold_expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)\`,
-        [
-          id, provider_id, customer_email, starts_at, ends_at, 'hold',
-          hold.reservation.id, hold.expires_at, Date.now(),
-        ])
-
       const checkout = await sw.payments.checkout({
         env: 'prod',
         mode: 'payment',
         calendar_hold_token: hold.hold_token,
-        line_items: [{ amount: provider.price_cents, currency: 'usd', name: 'Booking confirmation' }],
-        success_url: \`https://\${sw.env.SUBDOMAIN}.somewhere.site/booked?id=\${id}\`,
-        cancel_url: \`https://\${sw.env.SUBDOMAIN}.somewhere.site/cancelled?id=\${id}\`,
+        line_items: [{ amount: provider.price_cents, currency: 'usd', name: 'Appointment' }],
+        success_url: \`https://\${sw.env.SUBDOMAIN}.somewhere.site/checkout-return\`,
+        cancel_url: \`https://\${sw.env.SUBDOMAIN}.somewhere.site/book\`,
         customer_email,
-        metadata: { booking_id: id },
       })
 
-      await sw.db.query(
-        "UPDATE bookings SET status = 'pending_payment', checkout_session_id = ? WHERE id = ? AND status = 'hold'",
-        [checkout.session_id ?? null, id])
-
       return Response.json({
-        booking_id: id,
+        reservation_id: hold.reservation.id,
+        status: 'pending_payment',
         checkout_url: checkout.url,
         hold_expires_at: hold.expires_at,
       })
     } catch (err) {
       await sw.calendar.release(hold.hold_token, { release_reason: 'checkout_setup_failed' }).catch(() => {})
-      await sw.db.query("UPDATE bookings SET status = 'cancelled' WHERE id = ? AND status = 'hold'", [id]).catch(() => {})
       throw err
     }
   }
 
-## Function: api/booked.ts — confirm on success-url + sweep via events
+The checkout call binds the hold token to the payment session so the platform
+can manage its lifecycle. A success redirect is navigation, not payment proof.
+\`sw.payments.events\` is an activity feed and does not expose checkout metadata
+or payment status, so this recipe does not mark the booking fulfilled or send a
+confirmation email. Add those effects only behind a supported, signed payment
+completion callback that proves the payment succeeded.
 
-  export default async (req, sw) => {
-    const id = new URL(req.url).searchParams.get('id')
-    if (!id) return new Response('missing id', { status: 400 })
-    const { data: existing } = await sw.db.query('SELECT * FROM bookings WHERE id = ?', [id])
-    if (!existing[0]) return Response.json({ error: 'not_found' }, { status: 404 })
-    if (existing[0].status === 'confirmed') return Response.json({ status: 'confirmed' })
-
-    // Use sw.payments.events to find the matching checkout.session.completed
-    // for this booking. Checkout has already confirmed the sw.calendar hold.
-    const { events } = await sw.payments.events({ type: 'checkout.session.completed', limit: 50 })
-    const match = events.find(e => e.metadata?.booking_id === id)
-    if (!match) return Response.json({ status: existing[0].status })
-
-    await sw.db.query(
-      \`UPDATE bookings
-          SET status = 'confirmed', stripe_payment_intent = ?, confirmed_at = ?
-        WHERE id = ? AND status IN ('hold', 'pending_payment')\`,
-      [match.payment_intent_id ?? null, Date.now(), id])
-    const { data: bk } = await sw.db.query('SELECT * FROM bookings WHERE id = ?', [id])
-    if (bk[0]?.status === 'confirmed') {
-      await sw.email.send({
-        to: bk[0].customer_email,
-        subject: 'Your booking is confirmed',
-        html: \`<p>Confirmed for \${new Date(bk[0].starts_at).toLocaleString()}.</p>\`,
-      })
-    }
-    return Response.json({ status: bk[0]?.status ?? 'pending_payment' })
-  }
-
-Add a cron (sw.cron) that re-runs the events sweep periodically to
-catch bookings where the user closed the tab before Stripe redirected.
-For a non-Checkout payment flow, call \`sw.calendar.pending(holdToken, ...)\`
-before collecting payment, \`sw.calendar.confirm(holdToken, ...)\` only after
-payment settles, and \`sw.calendar.release(holdToken, ...)\` when the customer
-cancels. Keep customer-facing details in the \`bookings\` table, but use
-\`sw.calendar.availability/list/get\` for reservation state and conflict reads;
-do not mirror active holds just to render the calendar.
-
-Related topics: \`sw.calendar\`, \`sw.db\`, \`sw.payments\`, \`sw.email\`.
+Related topics: \`sw.calendar\`, \`sw.db\`, \`sw.payments\`.
 `,
 
-  'recipe-ecommerce': `# Recipe — E-commerce store
+  'recipe-ecommerce': `# Recipe — Fixed-price catalog checkout
 
-Storefront with products, cart, Stripe checkout, and order confirmation
-emails. Inventory decrements on payment; cancellation refunds via the
-Connect dashboard.
+Start Stripe checkout for an always-available catalog. This small recipe
+intentionally stops at checkout creation: it does not fulfill an order, send a
+confirmation, or reserve and decrement limited inventory.
 
 ## Database schema
 
-  // Apply this DDL ONCE as the developer — db_migrate MCP tool / CLI /
-  // dashboard — BEFORE deploying functions. Never run DDL from inside a
-  // handler: it's un-versioned, runs per-request, and new owner_id/user_id
-  // tables miss the per-user data protections until scoped. Functions
-  // read/write rows with sw.db.query.
-  db_migrate({ project_id, sql: \`
-    CREATE TABLE IF NOT EXISTS products (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      description TEXT,
-      price_cents INTEGER NOT NULL,
-      stock INTEGER NOT NULL DEFAULT 0,
-      image_url TEXT,
-      active INTEGER NOT NULL DEFAULT 1,
-      created_at INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS orders (
-      id TEXT PRIMARY KEY,
-      customer_email TEXT NOT NULL,
-      total_cents INTEGER NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending',
-      stripe_session_id TEXT,
-      created_at INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS order_items (
-      order_id TEXT NOT NULL,
-      product_id TEXT NOT NULL,
-      quantity INTEGER NOT NULL,
-      unit_price_cents INTEGER NOT NULL,
-      PRIMARY KEY (order_id, product_id)
-    );
-  \` })
+  // db/schema.ts — the checkout function reads this private catalog and returns
+  // only the checkout URL.
+  import { schema, table, id, text, integer, boolean, timestamp, serverOnly } from 'somewhere/db'
 
-## Function: api/checkout.ts — create order + Stripe session
+  export default schema({
+    products: table({
+      id: id({ uuid: true }),
+      name: text(),
+      description: text({ nullable: true }),
+      price_cents: integer(),
+      image_url: text({ nullable: true }),
+      active: boolean({ default: true }),
+      created_at: timestamp({ default: 'now' }),
+    }, { scope: serverOnly() }),
+  })
+
+## Function: api/checkout.ts — create checkout
 
   export default async (req, sw) => {
-    const { items, customer_email } = await req.json()       // [{ product_id, quantity }, ...]
-    const ids = items.map(i => i.product_id)
-    const { data: products } = await sw.db.query(
-      \`SELECT id, name, price_cents, stock FROM products WHERE id IN (\${ids.map(() => '?').join(',')}) AND active = 1\`,
-      ids)
-    const byId = Object.fromEntries(products.map(p => [p.id, p]))
-
-    let total = 0
-    for (const it of items) {
-      const p = byId[it.product_id]
-      if (!p) return Response.json({ error: 'product_unavailable' }, { status: 400 })
-      if (p.stock < it.quantity) return Response.json({ error: 'out_of_stock', product: p.name }, { status: 400 })
-      total += p.price_cents * it.quantity
+    const { items, customer_email } = await req.json()
+    if (!Array.isArray(items) || items.length < 1 || items.length > 20 ||
+        typeof customer_email !== 'string') {
+      return Response.json({ error: 'invalid_cart' }, { status: 400 })
+    }
+    if (items.some(it => typeof it.product_id !== 'string' ||
+        !Number.isInteger(it.quantity) || it.quantity < 1 || it.quantity > 99)) {
+      return Response.json({ error: 'invalid_cart' }, { status: 400 })
+    }
+    const ids = items.map(it => it.product_id)
+    if (new Set(ids).size !== ids.length) {
+      return Response.json({ error: 'duplicate_product' }, { status: 400 })
     }
 
-    const orderId = crypto.randomUUID()
-    const writes = [
-      { sql: 'INSERT INTO orders (id, customer_email, total_cents, status, created_at) VALUES (?, ?, ?, ?, ?)',
-        params: [orderId, customer_email, total, 'pending', Date.now()] },
-      ...items.map(it => ({
-        sql: 'INSERT INTO order_items (order_id, product_id, quantity, unit_price_cents) VALUES (?, ?, ?, ?)',
-        params: [orderId, it.product_id, it.quantity, byId[it.product_id].price_cents],
-      })),
-    ]
-    await sw.db.batch(writes)
-
+    // This public function intentionally reads only active catalog fields.
+    const { data: products } = await sw.db.from('products', {
+      columns: ['id', 'name', 'price_cents'],
+      where: { id: { in: ids }, active: true },
+      limit: 20,
+      asServer: true,
+    })
+    if (products.length !== items.length) {
+      return Response.json({ error: 'product_unavailable' }, { status: 400 })
+    }
+    const byId = Object.fromEntries(products.map(product => [product.id, product]))
     const checkout = await sw.payments.checkout({
-      amount_cents: total,
-      description: \`Order #\${orderId.slice(0, 8)}\`,
-      success_url: \`https://\${sw.env.SUBDOMAIN}.somewhere.site/order/\${orderId}\`,
+      env: 'prod',
+      mode: 'payment',
+      line_items: items.map(item => ({
+        amount: byId[item.product_id].price_cents,
+        currency: 'usd',
+        name: byId[item.product_id].name,
+        quantity: item.quantity,
+      })),
+      success_url: \`https://\${sw.env.SUBDOMAIN}.somewhere.site/thanks\`,
       cancel_url: \`https://\${sw.env.SUBDOMAIN}.somewhere.site/cart\`,
       customer_email,
-      metadata: { order_id: orderId },
     })
-    return Response.json({ order_id: orderId, checkout_url: checkout.url })
-  }
-
-## Function: api/order.ts — confirm + decrement stock via events sweep
-
-  export default async (req, sw) => {
-    const orderId = new URL(req.url).pathname.split('/').pop()
-    if (!orderId) return new Response('missing id', { status: 400 })
-
-    // Same pattern as the booking recipe: pull from sw.payments.events
-    // (the platform's idempotent webhook ledger) and reconcile.
-    const { events } = await sw.payments.events({ type: 'checkout.session.completed', limit: 100 })
-    const match = events.find(e => e.metadata?.order_id === orderId)
-    if (!match) {
-      const { data: pending } = await sw.db.query('SELECT * FROM orders WHERE id = ?', [orderId])
-      return Response.json({ order: pending[0] ?? null, status: pending[0]?.status ?? 'unknown' })
-    }
-
-    const { data: existing } = await sw.db.query('SELECT status FROM orders WHERE id = ?', [orderId])
-    if (existing[0]?.status === 'paid') {
-      // Already reconciled — idempotent.
-      const { data: order } = await sw.db.query('SELECT * FROM orders WHERE id = ?', [orderId])
-      return Response.json({ order: order[0], status: 'paid' })
-    }
-
-    const { data: items } = await sw.db.query(
-      'SELECT product_id, quantity FROM order_items WHERE order_id = ?', [orderId])
-
-    const writes = [
-      { sql: "UPDATE orders SET status = 'paid', stripe_session_id = ? WHERE id = ? AND status = 'pending'",
-        params: [match.id, orderId] },
-      ...items.map(i => ({
-        sql: 'UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?',
-        params: [i.quantity, i.product_id, i.quantity],
-      })),
-    ]
-    await sw.db.batch(writes)
-
-    const { data: order } = await sw.db.query('SELECT * FROM orders WHERE id = ?', [orderId])
-    await sw.email.send({
-      to: order[0].customer_email,
-      subject: \`Order #\${orderId.slice(0, 8)} confirmed\`,
-      html: \`<p>Thanks for your order. We'll let you know when it ships.</p>\`,
-    })
-    await sw.analytics.track('checkout_completed', {
-      properties: { order_id: orderId, amount: order[0].total_cents },
-    })
-    // The order write above invalidates any live view declared over the
-    // orders table, so an open order screen re-reads on its own.
-    return Response.json({ order: order[0], status: 'paid' })
+    return Response.json({ status: 'pending_payment', checkout_url: checkout.url })
   }
 
 ## Notes
 
-- **Stock atomicity.** The webhook uses \`stock >= ?\` in the UPDATE so
-  a concurrent purchase can't drive stock negative. If a payment lands
-  for a product that just sold out, the UPDATE is a no-op — refund via
-  the Stripe dashboard or extend this handler with sw.payments.refund.
-- **Cart persistence.** This recipe is stateless on the server — store
-  the cart in the browser. For logged-in carts, gate behind
-  sw.auth.requireUser and persist to a \`carts\` table.
-- **Receipts and slow follow-up.** Render a reusable receipt with
-  \`sw.render.pdf\` / \`render_pdf\`. If PDF generation or a mail batch needs
-  retry/status, use \`sw.jobs.create\` / \`job_create\`; use
-  \`sw.queue.push\` / \`queue_send\` only when no result is needed.
-- **Closed-tab updates.** Hand the browser \`sw.push.vapidPublicKey\`, then
-  register the returned subscription with developer credentials
-  (\`push_subscribe\`; \`sw.push.subscribe\` is not available in a function,
-  so a buyer cannot self-register today) and send shipping updates with
-  \`sw.push.send({ payload, user_id })\` / \`push_send\`. Email is the
-  dependable end-user channel until self-registration returns.
+- **Inventory.** This recipe is for products that remain available. A limited-
+  stock store needs a reservation design that handles expiry, payment failure,
+  and compensation; do not add a guarded decrement to this flow and call it an
+  inventory guarantee.
+- **Fulfillment.** A success redirect is not payment proof, and
+  \`sw.payments.events\` does not expose per-checkout metadata or payment status.
+  Keep fulfillment and confirmation out of this handler. Add those effects
+  only when your integration has a supported, signed payment-completion
+  callback; if the product is a plan entitlement, use \`checkoutForUser\` and
+  \`sw.billing\`, which apply entitlement changes from platform-verified events.
+- **Cart persistence.** Store the cart in the browser. For logged-in carts,
+  gate behind \`sw.auth.requireUser\` and use a separately declared owner table.
 - **Catalog discovery.** Create a product index once with
   \`search_index_create\`, then \`search_upsert\` whenever a product changes.
-  Generate missing product/hero art with \`ai_generate_image\` when the
-  merchant asks for it.
 
-Related topics: \`payments\`, \`sw.db\`, \`sw.email\`, \`analytics\`,
-\`realtime\`, \`sw.push\`, \`sw.jobs\`, \`sw.queue\`, \`render\`, \`search\`,
-\`sw.ai\`.
+Related topics: \`payments\`, \`sw.billing\`, \`sw.db\`, \`search\`.
 `,
 
   'recipe-multi-chat': `# Recipe — Multi-chat (Claude.ai-style conversation list)

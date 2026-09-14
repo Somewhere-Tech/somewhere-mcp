@@ -7223,7 +7223,7 @@ The platform-managed sender is transactional-only. Add a verified sender domain 
   {
     definition: {
     name: 'email_status',
-    description: `Look up the delivery timeline for an email previously sent via email_send. Pass the tracking_id (same as the id returned from email_send). Returns every recorded event — sent, delivered, opened, clicked, bounced, complained — in order, plus event_counts for the message.
+    description: `Look up the safe delivery timeline for an email previously sent by a project or issued by the platform for that project's app auth. Pass the tracking_id (same as the id returned from email_send or an authorized project workflow). Returns origin, source, auth_purpose when recorded, every lifecycle event — sent, delivered, opened, clicked, bounced, complained — in order, and event_counts. Message bodies, auth codes, credential links, and provider payloads are not returned. Historical rows without trusted sent provenance report origin/source as unknown. An opened event may come from an image proxy or automated scanner; it does not prove a person read the email or signed in. Missing events mean unknown, and this tool does not imply that open tracking is active.
 
 **Example:**
 
@@ -7258,7 +7258,7 @@ The platform-managed sender is transactional-only. Add a verified sender domain 
   {
     definition: {
     name: 'email_events_list',
-    description: `List recent emails sent from a project, with the latest delivery status (sent / delivered / opened / clicked / bounced / complained / delivery_delayed) and event_counts for each. Use this to audit delivery health, find which messages bounced, or surface a "sent mail" view in your admin dashboard. For a specific message's full timeline, follow up with email_status({ id: tracking_id }).`,
+    description: `List recent project mail and platform-issued app auth mail recorded for an authorized project. Each row includes origin, source, auth_purpose when recorded, latest delivery status (sent / delivered / opened / clicked / bounced / complained / delivery_delayed), and event_counts. Historical rows without trusted sent provenance report origin/source as unknown. Use the timeline for delivery diagnostics: an opened event may come from an image proxy or automated scanner and does not prove a human read the email or signed in; missing events mean unknown, and this tool does not imply that open tracking is active. For a specific message's safe timeline, follow up with email_status({ id: tracking_id }).`,
     inputSchema: {
       type: 'object',
       properties: {
