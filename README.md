@@ -57,7 +57,7 @@ npm test
 npm run check:bundle
 ```
 
-The checks run locally without deploying an app or calling paid AI models. `source-manifest.json` records the canonical source commit and a SHA-256 hash for every exported file. The selected runtime files are copied byte-for-byte from the platform source; the example configuration and package scripts are adapted for this distribution.
+The checks run locally without deploying an app or calling paid AI models. `source-manifest.json` records the canonical source commit and a SHA-256 hash for every exported file. The selected runtime files are copied byte-for-byte from the platform source; the package scripts are adapted for this distribution.
 
 ## Contribute
 
@@ -65,11 +65,9 @@ Issues and pull requests are welcome. For a bug, include the MCP client/version,
 
 This repository is maintained through a reproducible export from the platform's canonical source. Maintainers integrate accepted changes there before publishing the next snapshot, so the public server and hosted implementation do not develop separately. The private platform history is not included in the export.
 
+The somewhere.tech backend is not included in this repository.
+
 The command-line client is [`@somewhere-tech/cli`](https://www.npmjs.com/package/@somewhere-tech/cli), and the optional JavaScript and TypeScript SDK is [`@somewhere-tech/sdk`](https://www.npmjs.com/package/@somewhere-tech/sdk).
-
-## Deployment scope
-
-The MCP server is open source, but it is a bridge to somewhere.tech services. A separate deployment requires private API and runner service bindings that are not part of this repository. `wrangler.example.toml` contains placeholders only and does not make the full somewhere.tech platform self-hostable.
 
 ## License
 

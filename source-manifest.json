@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "source_repository": "Somewhere-Tech/somewhere-tech",
-  "source_ref": "c19b25fb023af02d1af2cf64b24b03437a6bea35",
-  "source_sha": "c19b25fb023af02d1af2cf64b24b03437a6bea35",
+  "source_ref": "ce3b02995adb842960fba79f5e27cc0433206d86",
+  "source_sha": "ce3b02995adb842960fba79f5e27cc0433206d86",
   "files": {
     ".cursor-plugin/plugin.json": {
       "bytes": 458,
@@ -213,12 +213,12 @@
       "sha256": "fbf8b2aa5b52661f2661417d0bd9360fc16fb75959d3bb6944e2a885d5fad92f"
     },
     "README.md": {
-      "bytes": 4526,
-      "sha256": "d97f15621992856abe44229d4da7a727334cffa8da419094e5b890ad06222c7f"
+      "bytes": 4238,
+      "sha256": "aa7806450d29566abddde69d106215c702dab0530bf73a860d9f86d3f0b125f2"
     },
     "scripts/check-public-mcp-bundle.mjs": {
-      "bytes": 2437,
-      "sha256": "526896e46f9c99b2d057ea9a06208d9d37142a96e8a4f21500f9b5c3c2471d43"
+      "bytes": 2735,
+      "sha256": "53dd1c521ccde102a6cd36ecd12ea37ac443897f62414597082e78ec85ea505f"
     },
     "shared/connector-policy.ts": {
       "bytes": 1869,
@@ -255,10 +255,6 @@
     "worker/src/utils/safe-fetch.ts": {
       "bytes": 10611,
       "sha256": "f70f84bf236502e9631955ec03ee99d141cda379de2e994495ee6b1291292986"
-    },
-    "wrangler.example.toml": {
-      "bytes": 729,
-      "sha256": "2a9977fcbe6ecfd9fcfb894596e6992521563f66dcae49ec15c529de17853db8"
     }
   }
 }

@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
-const output = mkdtempSync(join(tmpdir(), 'somewhere-mcp-bundle-'));
 const wrangler = resolve(root, 'node_modules/.bin/wrangler');
 
 const plugin = JSON.parse(readFileSync(resolve(root, '.cursor-plugin/plugin.json'), 'utf8'));
@@ -40,15 +39,24 @@ if (JSON.stringify(somewhere) !== JSON.stringify({ url: 'https://mcp.somewhere.t
 }
 console.log('Cursor plugin manifest and MCP configuration passed.');
 
+const temporary = mkdtempSync(join(tmpdir(), 'somewhere-mcp-bundle-'));
+const output = join(temporary, 'output');
+const config = join(temporary, 'wrangler.toml');
 try {
+  writeFileSync(config, [
+    'name = "somewhere-mcp-bundle-check"',
+    `main = ${JSON.stringify(resolve(root, 'mcp-server/src/index.ts'))}`,
+    'compatibility_date = "2024-12-01"',
+    'compatibility_flags = ["nodejs_compat"]',
+    '',
+  ].join('\n'));
   const result = spawnSync(wrangler, [
-    'deploy', '--dry-run', '--config', 'wrangler.example.toml', '--outdir', output,
+    'deploy', '--dry-run', '--config', config, '--outdir', output,
   ], { cwd: root, encoding: 'utf8' });
   if (result.status !== 0) {
-    process.stderr.write(result.stderr || result.stdout || 'Wrangler dry run failed.\n');
-    process.exit(result.status ?? 1);
+    throw new Error(result.stderr || result.stdout || 'Wrangler dry run failed.');
   }
-  console.log('Bundle check passed with the sanitized example configuration.');
+  console.log('Bundle check passed with isolated test configuration.');
 } finally {
-  rmSync(output, { recursive: true, force: true });
+  rmSync(temporary, { recursive: true, force: true });
 }
