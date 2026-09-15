@@ -5090,6 +5090,15 @@ from \`ai_catalog\`. Explicit \`provider: 'openai'\` or
 Explicit \`provider: 'workers-ai'\` retains its separate included-model
 limits. Free responses use platform credentials even if you configured BYOK.
 
+\`ai_catalog\` (\`GET /v1/ai/catalog\`) labels these boundaries directly.
+\`free_complete_default.limits\` is 10 requests/minute and 200/day on every
+plan; its existing \`scope\`, plus \`route_scope\`, \`counter_scope\` and
+\`counter\`, show that it shares one owner-across-projects counter with
+explicit \`provider: 'workers-ai'\` completion and moderation. Those explicit
+routes have a separate tier envelope under \`rate_limits\` / \`rate_limits_by_tier\`, with
+their own route and counter labels. The fields are additive; numeric limits
+and \`free_complete_default.limits.scope\` remain available.
+
 ## Provider credentials (optional BYOK)
 
 Platform-managed credentials work without setup. To bill Anthropic or OpenAI
@@ -8498,6 +8507,26 @@ only, while eligible paid-plan calls use the allowance first and then prepaid.
 Published request and model limits still apply. Inbox is metered per inbound
 email (rate at /v1/pricing), never capped or time-expired.
 
+## Balance and included AI
+\`GET /v1/billing/balance\` keeps the prepaid balance fields at the top level
+and reports the plan inclusion separately as \`included_ai\`:
+
+\`\`\`text
+included_ai: {
+  scope: "account"
+  period_start: number | null
+  period_end: number | null
+  allowance_microdollars, spent_microdollars, reserved_microdollars,
+  available_microdollars: number
+  allowance_dollars, spent_dollars, reserved_dollars, available_dollars: number
+}
+\`\`\`
+
+Period values are Unix epoch milliseconds, or null. \`spent\` is settled use;
+\`reserved\` is outstanding included-allowance holds and must not be counted as
+spent. Included \`available\` is clamped at zero. It is distinct from the
+top-level prepaid \`balance\`, \`pending\` and \`available\` values.
+
 ## The tiers
 Five tiers — Free, Builder, Pro, Scale, Enterprise. Fetch /v1/pricing for the
 live prices and per-tier caps (files, database, email, realtime publishes,
@@ -8524,8 +8553,17 @@ the platform never silently blacks out a live app at a limit.
 
 ## Check your plan / upgrade
 Your plan is per-ACCOUNT (not per-project) — see it in Dashboard → Billing.
-Upgrade there, or via payments_checkout with the tier's Stripe Price ID
-from /v1/pricing.
+Upgrade there, or create a platform subscription checkout directly:
+
+\`\`\`bash
+curl -X POST https://api.somewhere.tech/v1/billing/checkout \\
+  -H "Authorization: Bearer $SOMEWHERE_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"plan":"builder"}'
+\`\`\`
+
+The JSON body has exactly one field, \`plan\`, whose value is \`builder\`,
+\`pro\`, or \`scale\`. This platform upgrade does not take a Stripe Price ID.
 `,
 
   'changes': `# Recent behaviour changes
