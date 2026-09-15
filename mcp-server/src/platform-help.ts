@@ -5688,10 +5688,12 @@ together, with no second markup.
 ## Free chat
 
 Default pick — omit both provider/model and the platform serves
-\`gpt-5.6-luna\`, free to the user. Every plan shares the same owner-level
-allowance: 10 requests/minute, 200/day, 8,192 estimated input tokens including
-system/tools/history, and 1,024 output tokens per call. No paid fallback or
-automatic paid repair request. Set \`max_tokens\` to 1,024 or less.
+\`gpt-5.6-luna\` from the account's included managed-AI allowance: $0.50 per
+month on Free and $5 per billing period on paid plans. Every plan also has the
+same owner-level request envelope: 10 requests/minute, 200/day, 8,192 estimated
+input tokens including system/tools/history, and 1,024 output tokens per call.
+No prepaid fallback or automatic paid repair request. Set \`max_tokens\` to
+1,024 or less.
 
 The \`provider: 'workers-ai'\` path remains an explicit opt-in.
 Current non-reasoning chat models from that provider are
@@ -7743,6 +7745,10 @@ drives every live update a browser can see.
 
   'cron': `# Cron — Scheduled Tasks
 
+Customer recurring schedules are available on Builder and higher. Free keeps
+one-shot jobs and queues, but creating or editing customer cron schedules is
+disabled by the plan.
+
 > **New, 2026-09-02 — plans now set a minimum interval between fires.**
 > Creating or editing a schedule tighter than your plan allows is refused
 > (\`CRON_SCHEDULE_TOO_FREQUENT\`). Schedules that already exist are NOT
@@ -8021,11 +8027,11 @@ with NO redeploy. Same shape for any "fetch sources → extract to a
 schema → serve" job.
 `,
 
-  'smoke': `# Smoke tests — auto-wired uptime checks
+  'smoke': `# Smoke tests — deploy and recurring checks
 
-Every deployed project is probed automatically — no setup. Homepage on
-the project's \`*.somewhere.site\` subdomain plus each claimed custom
-domain root, every ~20 minutes via cron and once after every deploy.
+Manual \`site_check\` and deploy-triggered verification remain available on
+every plan. Automatic recurring smoke checks run on Builder and higher at the
+plan cadence; Free does not run recurring smoke work.
 
 Status per run: \`pass\` / \`partial\` / \`fail\`. A fail-after-pass
 transition is detected and alerted automatically, debounced by
@@ -8354,9 +8360,8 @@ if (!rl.allowed) return Response.json({ error: 'paused' }, { status: 429 })
   'pricing': `# Pricing
 
 Tiers: Free, Builder, Pro, Scale, Enterprise. Projects, deploys, and bandwidth are
-unlimited on every tier; custom domains are free on every tier. The current prices, the
-full per-tier limits, and AI billing are listed in the Pricing section of /docs.txt and
-served live (the source of truth) at:
+unlimited on every tier; custom domains are available on every tier (Free retains the
+"Built on Somewhere" badge). Current prices, limits, and AI allowances are served live at:
 
   GET https://api.somewhere.tech/v1/pricing   (public, cached)
 
@@ -8485,26 +8490,26 @@ bandwidth (zero egress fees). Custom domains are free on every tier.
 
 Payments: charges settle to your connected account, minus Stripe's standard
 processing fee and a 0.5% platform fee (each checkout response includes
-\`fee_percent\` so you can account for it). AI: pay-as-you-go — each call draws
-its cost from your prepaid balance, capped by what you load (no surprise bills), and
-settles at the balance's microdollar precision — no one-cent minimum; the cost, plus
-any applicable markup, is rounded up to the nearest microdollar and the ledger keeps
-that amount. Free models cost
-nothing on every tier (rate-limited); paid models draw from balance on every
-plan, Free included — a call gates on funds only, never on tier. Inbox: metered per inbound email (rate at /v1/pricing),
-never capped or time-expired.
+\`fee_percent\` so you can account for it). Managed AI uses the same all-in
+catalog rates on every tier. Free includes $0.50 each month and paid plans
+include $5 per billing period. Included/default calls never spend prepaid
+balance automatically; explicit paid-model selection on Free uses prepaid
+only, while eligible paid-plan calls use the allowance first and then prepaid.
+Published request and model limits still apply. Inbox is metered per inbound
+email (rate at /v1/pricing), never capped or time-expired.
 
 ## The tiers
 Five tiers — Free, Builder, Pro, Scale, Enterprise. Fetch /v1/pricing for the
 live prices and per-tier caps (files, database, email, realtime publishes,
 upload size, uptime-check frequency). They differ along two axes:
 
-- **Caps, not features.** Every tier includes the FULL platform — functions,
-  database, auth, email, AI, payments, files, inbox, realtime, background jobs.
-  Higher tiers raise the caps (storage, database, email, realtime); see
-  /v1/pricing for the numbers.
-- **Service level.** Free shows a "Built on Somewhere" badge and is limited to
-  free models (rate-limited). Builder removes the badge and adds
+- **Core platform plus plan capabilities.** Every tier includes functions,
+  database, auth, outbound email, AI, payments, files, realtime, one-shot jobs,
+  queues, builds, and deploys. Higher tiers raise caps; Builder and higher add
+  customer cron and recurring smoke checks. See /v1/pricing for the current
+  numbers and capability flags.
+- **Service level.** Free shows a "Built on Somewhere" badge and uses its
+  included AI allowance and request limits. Builder removes the badge and adds
   advisory debugging (copilot reads your deployed code + diagnoses bugs) plus a
   daily LLM security review. Pro adds office hours and a stronger review.
   Scale adds per-deploy
@@ -9501,7 +9506,7 @@ it does not prove every endpoint or arbitrary query safe.
 - **What goes wrong:** a customer's deploy silently fails; they don't notice for hours. You don't notice ever.
 
 ### Automatic health checks
-- **Platform:** every project gets a 5-minute (Builder+) or 60-minute (Free) smoke test against its live URL. Failures alert our team automatically and surface yellow on the dashboard.
+- **Platform:** Builder and higher get recurring smoke tests at the plan cadence. Free keeps manual checks and deploy-triggered verification. Failures surface on the dashboard and follow the configured alert path.
 - **DIY:** set up Pingdom / UptimeRobot per project. Configure alerts. Pay per probe.
 - **What goes wrong:** you find out your prod site went down when a customer tweets at you.
 
@@ -11774,8 +11779,8 @@ What's different from Postgres (most don't matter for app code):
   \`sw.db.server\` reads bypass that scope only when selected by the function.
 - **Atomic batches** — \`sw.db.tx\` and \`sw.db.server.tx\` commit related
   declared operations together; ordinary single writes remain direct.
-- **Database storage** — account totals are Free 5 GB / Builder 10 GB / Pro
-  25 GB / Scale 25 GB / Enterprise contract, with a separate 10 GB ceiling on
+- **Database storage** — account totals are Free 500 MB / Builder 10 GB / Pro
+  25 GB / Scale 50 GB / Enterprise contract, with a separate 10 GB ceiling on
   one project database. Storage is enforced; reads are unmetered. The live
   values are returned by \`GET /v1/pricing\`.
 
@@ -12162,12 +12167,12 @@ You'd normally need a stack like:
 | Tier        | $/mo | What's in it |
 |---|---:|---|
 | Free        | $0   | Unlimited projects and core application services |
-| Builder     | $20  | Everything: functions, DB, auth, storage, email, payments, AI |
+| Builder     | $25  | Core services, paid limits, cron, recurring checks, and inbound email |
 | Pro         | $50  | + inbox, more limits, advisory debugging, security review |
 | Scale       | $100 | + highest limits |
 | Enterprise  | contact us | Custom terms for larger teams — talk to us |
 
-Unlimited projects + deploys on every paid tier. See
+Unlimited projects + deploys on every tier. See
 \`docs({ topic: 'billing' })\` for the canonical full list.
 
 ## What we do NOT charge for
@@ -12175,7 +12180,8 @@ Unlimited projects + deploys on every paid tier. See
 - **Bandwidth**: zero egress fees. Vercel's Hobby tier caps you at
   100 GB/mo bandwidth; Pro is $40/TB after the first TB.
 - **Build minutes**: unmetered. Vercel Pro is 6000 min/mo.
-- **MAUs**: unlimited end-users. Clerk's $25 Pro tier caps at 5K MAUs,
+- **End users**: no per-user fees. Free includes 1,000 users per project;
+  paid plans include unlimited users. Clerk's $25 Pro tier caps at 5K MAUs,
   then $0.02 each.
 - Bandwidth and storage carry no extra usage charges.
 
@@ -12183,9 +12189,9 @@ Unlimited projects + deploys on every paid tier. See
 
 - **Payments**: Stripe Connect charges carry a 0.5% platform fee on top of
   Stripe's standard processing fees; each checkout response includes \`fee_percent\`.
-- **AI**: pay-as-you-go from a prepaid balance — each call draws its cost from
-  the balance, capped by what you load (no surprise bills). Free models are
-  included up to per-tier rate limits (see /v1/pricing).
+- **AI**: the same all-in catalog rates apply on every tier. Free includes
+  $0.50/month and paid plans include $5/billing period; allowance and prepaid
+  ordering plus request limits are published at /v1/pricing.
 
 Related: \`billing\`, \`vs-supabase\`, \`vs-vercel\`, \`portability\`.
 `,
