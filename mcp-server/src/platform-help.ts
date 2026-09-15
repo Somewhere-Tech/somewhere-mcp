@@ -1205,11 +1205,12 @@ for deliberate server-authority writes.
   not add another write queue. Use \`sw.db.tx\` for related declared operations;
   SQL-mode projects can use \`sw.db.batch\` for raw statements. Transient
   backpressure can still be retried.
-- **Point-in-time recovery** — the underlying database keeps 30 days of
-  history, and \`db_bookmark_create({ label })\` records named points around
-  migrations. Restoring a project database in place is not available: a
-  \`db_restore\` request is refused with \`DATABASE_RESTORE_UNAVAILABLE\` before
-  anything changes. Downloads and exports work as documented.
+- **Recovery evidence and exports** — \`db_bookmark_create({ label })\` records
+  a named marker around a production migration. It is
+  operational evidence, not a customer undo point: \`db_restore\` is refused
+  with \`DATABASE_RESTORE_UNAVAILABLE\` before anything changes. Use
+  \`db_dump\` or \`db_export\` to create a recoverable copy outside the live
+  database.
 - **Schema introspection** — \`db_describe\` returns tables +
   columns + row counts + foreign keys in one call.
 - **Runaway-query detection** — a query that monopolizes
@@ -11759,12 +11760,15 @@ What's different from Postgres (most don't matter for app code):
   \`sw.db.server\` reads bypass that scope only when selected by the function.
 - **Atomic batches** — \`sw.db.tx\` and \`sw.db.server.tx\` commit related
   declared operations together; ordinary single writes remain direct.
-- **Per-project quotas** — Free 1 GB / Builder 2 GB / Pro 10 GB / Scale 50 GB / Enterprise contract. Storage is enforced; reads are unmetered.
+- **Database storage** — account totals are Free 5 GB / Builder 10 GB / Pro
+  25 GB / Scale 25 GB / Enterprise contract, with a separate 10 GB ceiling on
+  one project database. Storage is enforced; reads are unmetered. The live
+  values are returned by \`GET /v1/pricing\`.
 
 ## When to use somewhere.tech's DB
 
 ✓ App data tied to end-users (accounts, content, sessions, orders, messages, embeddings).
-✓ Small-to-medium relational data — anything from 1 row to ~50 GB per project.
+✓ Small-to-medium relational data — anything from 1 row to 10 GB in one project.
 ✓ Request-path relational work where calls are bounded and write bursts are batched.
 
 ## When to reach for Postgres
@@ -12123,7 +12127,7 @@ You'd normally need a stack like:
 
 | Tier        | $/mo | What's in it |
 |---|---:|---|
-| Free        | $0   | Static hosting, 1 project, 1 GB storage |
+| Free        | $0   | Unlimited projects and core application services |
 | Builder     | $20  | Everything: functions, DB, auth, storage, email, payments, AI |
 | Pro         | $50  | + inbox, more limits, advisory debugging, security review |
 | Scale       | $100 | + highest limits |
@@ -12293,7 +12297,7 @@ Related: \`sw.db\`, \`security-model\`, \`portability\`.
   Supabase covers database + auth + storage + edge functions; you still
   wire Stripe, Resend, Inngest, Pinecone, OpenAI yourself.
 ✓ **You're shipping fast** — typically AI-built apps from Claude Code or
-  Cursor. The MCP server gives the coding agent 200+ tools to deploy,
+  Cursor. The MCP server gives the coding agent tools to deploy,
   query, and configure without leaving the chat.
 ✓ **Payments built in.** Stripe Connect is wired for you — no separate
   Stripe/billing integration to stand up. Supabase doesn't offer this.
@@ -12307,8 +12311,8 @@ Related: \`sw.db\`, \`security-model\`, \`portability\`.
   or a Postgres-specific extension we don't substitute for.
 ✗ **Existing Supabase project with momentum.** No reason to migrate
   for migration's sake.
-✗ **Complex relational data at scale (>50 GB single project).** Our
-  database-per-project model caps storage per tier — fine for the typical
+✗ **Complex relational data at scale (>10 GB single project).** Our
+  database-per-project model has a 10 GB ceiling — fine for the typical
   app, not ideal for a multi-tenant warehouse.
 ✗ **Self-host requirement.** Supabase is open-source and you can
   self-host the whole thing. We are not self-hostable.

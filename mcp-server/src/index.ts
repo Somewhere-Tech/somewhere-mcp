@@ -10555,7 +10555,7 @@ project_id is required (returns VALIDATION_ERROR if omitted). Backend failures a
   {
     definition: {
     name: 'db_bookmark_create',
-    description: `Record a named point in the project database's 30-day history. Restoring a database in place is not available (db_restore refuses with \`DATABASE_RESTORE_UNAVAILABLE\`), so a bookmark is a recorded marker, not an undo. Reusing a label overwrites the previous bookmark.
+    description: `Record a named marker around a database migration. It is operational evidence, not an undo point: restoring a database in place is unavailable and db_restore refuses with \`DATABASE_RESTORE_UNAVAILABLE\`. Use db_dump or db_export to create a recoverable copy. Reusing a label overwrites the previous marker.
 
 **Example:**
 
@@ -10566,7 +10566,7 @@ project_id is required (returns VALIDATION_ERROR if omitted). Backend failures a
       type: 'object',
       properties: {
         project_id: { type: 'string', description: "Project ID (UUID), subdomain, or slug — resolved server-side, no UUID lookup needed. 'default' also works when the account has exactly one project; multi-project accounts must name one (the error lists them)." },
-        label: { type: 'string', description: 'A friendly label for this restore point (max 96 chars). Example: "pre-migration-v12" or "before-cleanup".' },
+        label: { type: 'string', description: 'A friendly label for this recovery marker (max 96 chars). Example: "pre-migration-v12" or "before-cleanup".' },
       },
       required: ['project_id', 'label'],
     },
@@ -10593,7 +10593,7 @@ project_id is required (returns VALIDATION_ERROR if omitted). Backend failures a
   {
     definition: {
     name: 'db_bookmarks_list',
-    description: 'List the named points recorded in a project database\'s 30-day history. Restoring in place is not available; these are markers, not undo points.',
+    description: 'List named markers recorded around database migrations. Restoring in place is unavailable; these markers are operational evidence, not undo points. Use db_dump or db_export for a recoverable copy.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -10621,13 +10621,13 @@ project_id is required (returns VALIDATION_ERROR if omitted). Backend failures a
   {
     definition: {
     name: 'db_restore',
-    description: `Restoring a project database in place is not available: this call is refused with \`DATABASE_RESTORE_UNAVAILABLE\` before anything changes, for every project. No restore is admitted, so there is no restore outcome to read. Kept so older callers get a typed refusal rather than an unknown tool. Downloads and exports (db_dump, db_export) are unaffected and are the way to take data out.`,
+    description: `Restoring a project database in place is not available: this call is refused with \`DATABASE_RESTORE_UNAVAILABLE\` before anything changes, for every project. No restore is admitted, so there is no restore outcome to read. Kept so older callers get a typed refusal rather than an unknown tool. Use db_dump or db_export to create a recoverable copy.`,
     inputSchema: {
       type: 'object',
       properties: {
         project_id: { type: 'string', description: "Project ID (UUID), subdomain, or slug — resolved server-side, no UUID lookup needed. 'default' also works when the account has exactly one project; multi-project accounts must name one (the error lists them)." },
-        label: { type: 'string', description: 'Bookmark label from db_bookmark_create. Use this OR timestamp, not both.' },
-        timestamp: { type: 'string', description: 'ISO-8601 timestamp within the last 30 days. Use this OR label, not both.' },
+        label: { type: 'string', description: 'Legacy bookmark-label field. The restore request is always refused.' },
+        timestamp: { type: 'string', description: 'Legacy ISO-8601 timestamp field. The restore request is always refused.' },
       },
       required: ['project_id'],
     },
@@ -13634,7 +13634,7 @@ const CATALOG_CATEGORIES: Array<{
   { key: 'account', summary: 'Your own developer/connector account — save an anonymous MCP-connector session to a real, email-verified account', aliases: ['connector', 'session', 'save session', 'claim account', 'anonymous'] },
   { key: 'groups', summary: 'Project groups — organize projects under one group with shared members and a shared design theme; create/list/inspect groups, move projects in and out', aliases: ['group', 'team', 'teams', 'organize', 'folders', 'collections'] },
   { key: 'github', summary: 'GitHub push-to-deploy — connect a repo + branch so every push auto-deploys, check connection status, list your repos, disconnect', aliases: ['git', 'repo', 'repository', 'push to deploy', 'push-to-deploy', 'auto deploy', 'webhook', 'ci', 'continuous deployment'] },
-  { key: 'db', summary: 'Database — run SQL, migrations, CSV import/export, browse tables, point-in-time restore', aliases: ['sql', 'database', 'tables', 'schema', 'queries', 'migrations', 'backup', 'restore'] },
+  { key: 'db', summary: 'Database — run SQL and migrations, browse tables, export data, and record migration recovery markers', aliases: ['sql', 'database', 'tables', 'schema', 'queries', 'migrations', 'backup', 'restore'] },
   { key: 'webhooks', summary: 'Project outbound webhooks — inspect durable delivery attempts and redrive the exact original event', aliases: ['outbound webhook', 'delivery history', 'redrive', 'retry', 'dedupe'] },
   { key: 'fs', summary: 'Files — write inline text, upload native files, read/list/move/copy/delete storage, versions, signed URLs, glob search', aliases: ['files', 'storage', 'blob', 'upload', 'download', 'attachment'] },
   { key: 'auth', summary: 'End-user auth — signup, login, sessions, MFA, magic links, password reset, email templates', aliases: ['authentication', 'users', 'login', 'signup', 'sessions', 'mfa', 'oauth', 'password'] },
