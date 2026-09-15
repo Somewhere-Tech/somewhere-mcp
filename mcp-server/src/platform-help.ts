@@ -170,6 +170,12 @@ wrong Origin returns \`ORIGIN_REQUIRED\` or \`DATA_ORIGIN_FORBIDDEN\`. Errors ar
 \`AUTH_REQUIRED\`, \`DATA_ACCESS_DENIED\`, \`DATA_CONTRACT_MISMATCH\`,
 \`DATA_IDENTITY_MISMATCH\`, \`DATA_INPUT_INVALID\`, \`DATA_INPUT_TOO_LARGE\`,
 \`DATA_OPERATION_INVALID\`, \`DATA_VALUE_INVALID\`, \`DATA_CONFLICT\`.
+An update or delete by ID that matches no accessible record throws
+\`DataError\` with status 404 and code \`DATA_NOT_FOUND\` ("Record not found.").
+Missing records and records outside your write permissions return the same error.
+Successful writes report \`changes\`; a same-value update to your own record succeeds.
+Lower-level bulk \`sw.db\` operations still return a zero change count when nothing matches.
+
 A create or update that conflicts with a declared unique value returns
 \`DataError\` with status 409 and code \`DATA_CONFLICT\`. Map that code to your
 app's duplicate-value message; retrying the same values will not fix it.
@@ -1197,9 +1203,8 @@ for deliberate server-authority writes.
   automatically. Translation is literal- and comment-aware (so a column
   value of \`'ILIKE'\` is preserved). If you outgrow the default database,
   \`db_dump\` your data, perform the documented database-file-to-Postgres
-  conversion, and replace \`sw.db\` with the destination client. A
-  platform-managed Postgres arrangement is an additional support option, not
-  the only path.
+  conversion, and replace \`sw.db\` with the destination client. A managed
+  Postgres adapter is not a selectable backend or migration service.
 - **Direct writes** — ordinary writes go straight to the project's database.
   The database schedules writes to one project one at a time; the platform does
   not add another write queue. Use \`sw.db.tx\` for related declared operations;
@@ -6688,6 +6693,12 @@ protect: on the Pro and Scale plans (with preview enabled)
 you can instead create an isolated preview and promote when
 ready → docs({ topic: 'dev-environments' }).
 
+One deploy may contain at most 20 MiB of decoded source and assets combined.
+The JSON request envelope has a separate roughly 40 MB intake limit because
+base64 expands binary data in transit. Large images and other bulky media
+belong in file storage: make them public and reference their public URLs from
+the app instead of embedding them in the deploy tree.
+
 <!--layer:contract-->
 ## Analytics & privacy — nothing is injected
 
@@ -6999,7 +7010,10 @@ What is NOT affected by a deploy:
 If a project does not ship its own \`sitemap.xml\` or \`robots.txt\`, the
 platform serves both automatically. The sitemap lists deployed HTML pages and
 uses their upload times for \`<lastmod>\`; robots points crawlers at that
-sitemap. Shipping either file overrides only that generated fallback.
+sitemap. Shipping either file overrides only that generated fallback. Routes
+that exist only inside a client-side router are not separate deployed HTML
+pages, so the generated sitemap cannot discover them. Ship crawlable HTML for
+those routes or provide your own \`sitemap.xml\`.
 
 ## Example
 
@@ -11777,6 +11791,25 @@ What's different from Postgres (most don't matter for app code):
 ✗ Existing Postgres-native ecosystem (PostGIS, pgvector tuning, specific extensions you depend on).
 ✗ Cross-region multi-master writes that need >1 simultaneous writer.
 
+## Managed project database vs Postgres and Neon
+
+The managed project database removes setup that otherwise belongs to the app:
+database activation, schema application from \`db/schema.ts\`, a generated typed
+client, declared row-permission enforcement, and deploy diagnostics. The app
+still owns its data model, query design, and authorization decisions in server
+functions. The compiler checks declared contracts and known unsafe shapes; it
+does not prove that every query is correct or efficient.
+
+Postgres provides its own semantics, extensions, drivers, and operational
+ecosystem. Neon provides managed Postgres plus HTTP and WebSocket driver
+options. With either, the application chooses and configures the provider,
+region, credentials, connection behavior, migrations, authorization policy,
+transactions, and recovery plan. Next.js can integrate these providers; the
+framework does not choose those policies for the application.
+
+Neon references: https://neon.com/docs/reference/compatibility and
+https://neon.com/docs/serverless/serverless-driver
+
 Developer-side \`db_dump\` gives you a SQL file when another database better
 fits the workload. It restores directly into the source database engine;
 Postgres requires the two-step conversion in \`portability\`.
@@ -11836,7 +11869,7 @@ JSONB containment \`data @> '{"k":"v"}'\` auto-translates to \`json_extract(data
 
 - \`tags TEXT[]\` (any array type) → store as JSON text: \`tags TEXT DEFAULT '[]'\`, query with \`WHERE tag IN (SELECT value FROM json_each(tags))\`
 - \`BEGIN; … COMMIT;\` in one query → use \`sw.db.batch([{ sql, params }, …])\` (atomic, all-or-nothing)
-- \`GEOMETRY\`, \`GEOGRAPHY\`, \`TSVECTOR\`, \`HSTORE\`, \`INET\`, \`BYTEA\`, … → use full-text / \`sw.search\` / \`sw.fs\`, or switch to managed Postgres
+- \`GEOMETRY\`, \`GEOGRAPHY\`, \`TSVECTOR\`, \`HSTORE\`, \`INET\`, \`BYTEA\`, … → use full-text / \`sw.search\` / \`sw.fs\`; otherwise move the workload to Postgres
 
 Arrays are the most common: store them as a JSON text column and unroll with \`json_each()\` for querying.
 
@@ -11848,12 +11881,13 @@ Arrays are the most common: store them as a JSON text column and unroll with \`j
   \`sw.db.from/insert/update/remove\` on a declared \`scoped\` table, instead of
   CREATE POLICY.
 
-## Not available — escalate to managed Postgres
+## Not available on the managed database
 
 PL/pgSQL (write logic in your server function), PostGIS, table
 partitioning, and custom engine index types (GIN/GiST/BRIN — use an
-app-managed index table + FTS5). For genuinely Postgres-only needs the
-platform routes you to managed Postgres with a clear message.
+app-managed index table + FTS5). For genuinely Postgres-only needs, export and
+move the workload to Postgres. The platform does not provide a managed Postgres
+adapter or an automatic migration service.
 
 Related: \`database-engine\`, \`sw.db\`, \`portability\`.
 `,
@@ -12192,6 +12226,18 @@ sqlite3 backup.db < backup.sql
 pgloader backup.db postgresql://user:pass@host/db
 \`\`\`
 
+## Neon integration status
+
+Today, Neon is an external Postgres destination: create and configure the
+database, run the conversion above, review dialect differences, and replace
+\`sw.db\` calls manually.
+
+**Planned, with no committed release date:** a direct managed Neon integration.
+The scope under evaluation is guided provisioning, connection setup, and
+migration assistance. It is not a promise of automatic or lossless conversion;
+schema semantics, queries, authorization policy, transactions, region choice,
+and recovery settings still require review.
+
 Review the dialect seams in \`migration.txt\` after conversion. The platform
 never sees the \`.sql\` after handing it to you. \`sw.db.dump()\` is not
 available inside a deployed function; exporting the whole database requires
@@ -12278,10 +12324,13 @@ JS-compatible serverless runtime.
 
 - The somewhere.site subdomain (\`<your-app>.somewhere.site\`) doesn't
   follow you. Custom domains do (you own the DNS).
-- End-user password hashes are held outside the project database and no export
-  endpoint returns them today. Moving auth providers requires an ordinary
-  password-reset flow. New hashes use standard bcrypt, but the format is not an
-  export capability.
+- End-user password credentials require a separate email-approved export.
+  The direct project owner runs \`somewhere auth export <project> --output <new-file>\`
+  and enters the code sent to their current verified account email. The CLI
+  creates a private file without printing hashes or overwriting existing files.
+  It contains stable user IDs and supported bcrypt credentials, with explicit
+  coverage counts and warnings for unsupported credentials. Passwordless users
+  have no password to export; sessions, reset codes and MFA secrets are excluded.
 - The dashboard, copilot, and security-review surfaces are platform
   features — they don't migrate, but your data + code does.
 
@@ -12340,12 +12389,13 @@ Related: \`sw.db\`, \`security-model\`, \`portability\`.
 
 → **somewhere.tech → Supabase**: \`db_dump\` → load into a database file →
   \`pgloader\` that file into Postgres. Application data comes out in full.
-  Password hashes do NOT: \`db_dump\` excludes credential storage and
-  \`auth_users_list\` returns metadata only, so there is no self-serve export
-  of password hashes today. Your users keep their accounts but set a new
-  password on the destination, unless you arrange a support-mediated hash
-  export. This asymmetry is a gap we own, not a policy — the same statement
-  appears in \`migration.txt\`, and the two must never disagree.
+  Password credentials travel separately: \`somewhere auth export <project>
+  --output <new-file>\` requests verified-owner email approval, then downloads
+  supported bcrypt credentials and stable user IDs into a private local file.
+  \`db_dump\` and \`auth_users_list\` do not return hashes. Check the export's
+  coverage and warnings: unsupported credentials require a password reset.
+  Sessions, refresh tokens, reset codes and MFA secrets are never exported.
+  See \`migration.txt\` for the same portability contract.
 → **Supabase → somewhere.tech**: \`pg_dump\` → import via \`db_migrate\` +
   \`db_import_csv\` per table. Auth users: export from Supabase via their
   admin API, then POST the rows to \`/v1/auth/import\` (up to 1,000 per
@@ -12357,6 +12407,20 @@ Related: \`portability\`, \`database-engine\`, \`pricing-comparison\`.
 `,
 
   'vs-vercel': `# somewhere.tech vs Vercel — honest comparison
+
+## Framework and backend responsibilities
+
+Next.js is an application framework; Vercel is a hosting platform optimized for
+running it. A Next.js application can integrate managed database, auth, files,
+email, payments, AI, and job providers. The application team chooses those
+providers and owns their credentials, SDKs, migrations, authorization policies,
+webhooks, and cross-service diagnostics.
+
+somewhere.tech hosts static or client-rendered React/Vite frontends and server
+functions, and includes those backend capabilities behind one project contract.
+It applies declared database permissions, generates the typed data client, and
+connects deploy diagnostics to the same project. The application still owns its
+business rules and the content it publishes.
 
 ## When to use somewhere.tech
 
@@ -12389,6 +12453,29 @@ Related: \`portability\`, \`database-engine\`, \`pricing-comparison\`.
 ✗ **You don't want any backend.** A pure static site with a few API
   routes that hit external services is what Vercel is best at. We're
   optimized for "needs a database + users."
+
+## Rendering and SEO responsibilities
+
+Next.js can render route output statically, from cached server work, or for a
+request. Its App Router also provides metadata APIs and file conventions for
+\`sitemap.xml\`, \`robots.txt\`, icons, and social images. The application chooses
+the rendering and cache behavior and supplies the actual metadata and content.
+
+somewhere.tech does not execute Next.js SSR, ISR, or App Router code. It compiles
+raw React/Vite source, serves deployed HTML and assets, and runs \`api/*\` server
+functions. For crawler-facing route content, deploy a separate HTML page for
+that route or generate the HTML before deployment. A client-router-only path
+shares the entry HTML and is not a separate crawler document. Deployment
+screenshots are preview evidence, not rendered HTML for crawlers.
+
+Edit titles, descriptions, canonical URLs, Open Graph tags, and other metadata
+in the deployed HTML. If the project does not provide \`sitemap.xml\` or
+\`robots.txt\`, the platform generates fallbacks; the sitemap enumerates only
+deployed HTML pages. A custom file overrides its generated counterpart. Search
+Console registration and ownership verification remain application work.
+
+Next.js references: https://nextjs.org/docs/app/getting-started/partial-prerendering
+and https://nextjs.org/docs/app/getting-started/metadata-and-og-images
 
 ## What's roughly equivalent
 

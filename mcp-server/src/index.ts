@@ -5083,6 +5083,40 @@ Pass \`intent: "shared"\` to mark a SQL-mode table as intentionally cross-user, 
   },
   {
     definition: {
+    name: 'auth_password_export_request',
+    description: `Request a one-time password credential export for a project you own. The platform emails a six-digit approval code only to the current verified owner account email; this tool never returns the code or any password hash.
+
+After the owner receives the code, use the Somewhere CLI's protected auth export command to write the download directly to a new local file. The approval expires after 10 minutes, is bound to this account, project, and exact verified owner email, and can be used once. Collaborators, app-user sessions, runtime keys, unverified accounts, and download attempts without the emailed code are refused.
+
+**Example:**
+
+\`\`\`json
+{ "project_id": "my-saas" }
+\`\`\``,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'string', description: "Project ID (UUID), subdomain, or slug. Only its direct owner can request the export." },
+      },
+      required: ['project_id'],
+    },
+  },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    group: 'auth',
+    core: false,
+    visibility: 'authenticated',
+    paid: false,
+    surfaces: ["full"],
+    protocol: { oauthScopes: ['mcp'] },
+    execute: async (runtime, args) => {
+      const { fetcher, authHeader } = runtime;
+      return callAPI(fetcher, 'POST', '/v1/auth/export/request', authHeader, {
+        project_id: args.project_id,
+      });
+    },
+  },
+  {
+    definition: {
     name: 'auth_users_list',
     description: 'List end-user accounts of your app — the people who signed up via auth_signup. Distinct from `project_list` (your own projects). Returns id, email, display_name, email_verified, created_at, last_login_at. Paginated by created_at descending.',
     inputSchema: {
