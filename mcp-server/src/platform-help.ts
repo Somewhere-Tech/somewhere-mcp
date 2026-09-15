@@ -2139,26 +2139,22 @@ restructuring**:
   and fails to compile with \`No such module\`. For data you deploy as a
   static file, read it at runtime with \`sw.fs.read()\`; inline small
   constants directly in code.
-- Runtime built-ins — \`node:*\` standard-library compatibility modules and
-  \`cloudflare:workers\` pass through. Common examples are \`node:crypto\`,
+- The documented runtime compatibility subset includes \`node:crypto\`,
   \`node:buffer\`, \`node:events\`, \`node:path\`, \`node:stream\`,
-  \`node:string_decoder\`, \`node:util\`, and \`node:url\`.
+  \`node:string_decoder\`, \`node:util\`, and \`node:url\`;
+  \`cloudflare:workers\` also passes through. Do not assume another Node
+  built-in is supported unless it is documented.
   \`node:fs\` also loads, but it is temporary scratch space, not storage:
   only \`/tmp\` is writable, and everything written there is gone after the
   response. Use \`sw.fs\` for any file that must persist.
 
-**npm packages resolve at deploy, with three limits you will meet** — declare
+**npm packages resolve at deploy, with compatibility boundaries** — declare
 them in \`package.json\` and the platform bundles them (no npm install).
-Pure-JS packages that keep to web-standard APIs work (\`nanoid\`, \`date-fns\`).
-A package that needs Node built-ins the bundler does not provide (\`stripe\`
-imports \`crypto\`/\`http\`/\`https\`) is refused at deploy with
-\`FUNCTION_BUILD_ERROR\` naming the file; a native module (\`sharp\`) is refused
-the same way. A package that assigns over an inherited built-in prototype
-property while it loads (\`zod\` and \`lodash\` do) currently deploys green and
-then fails on the first request with \`FUNCTION_MODULE_LOAD_FAILED\` — the
-function runtime freezes the core prototypes on purpose, and a fix that keeps
-that protection is in flight. Prefer web-standard APIs where they suffice, and
-check \`errors\` after the first request. Declare versions in \`package.json\`;
+Pure-JS packages that use web-standard APIs or the documented compatibility
+subset work, including \`zod\`, \`lodash\`, \`nanoid\`, and \`date-fns\`. Native
+modules such as \`sharp\` are unsupported, and a package that requires another
+Node built-in may be refused with \`FUNCTION_BUILD_ERROR\`. Package compatibility
+is not universal; prefer web-standard APIs where they suffice. Declare versions in \`package.json\`;
 \`zod@^3.22\` is a range, and a range resolves at deploy time. To pin
 exactly, ship a \`package-lock.json\` (version 2 or 3) — see docs({ topic:
 'deploy' }) → "Dependencies and lockfiles". A compiled release records the
@@ -9549,7 +9545,7 @@ it does not prove every endpoint or arbitrary query safe.
 - **What goes wrong:** you find out your prod site went down when a customer tweets at you.
 
 ### npm imports work in deployed functions
-- **Platform:** a pure-JS dependency such as \`import { nanoid } from 'nanoid'\` resolves automatically at deploy from your \`package.json\`; ship a lockfile for exact versions. No build step, no bundle config. (\`zod\` currently fails at first load — see docs({ topic: 'functions' }) → npm packages.)
+- **Platform:** pure-JS dependencies such as \`zod\`, \`lodash\`, and \`nanoid\` resolve automatically at deploy from your \`package.json\`; ship a lockfile for exact versions. Native modules remain unsupported, and only the documented Node compatibility subset is supported. No build step, no bundle config.
 - **DIY:** maintain a webpack / esbuild config, decide what to bundle, manage versions.
 - **What goes wrong:** spend hours debugging why your serverless function can't find \`lodash\` because the bundler tree-shook it.
 
