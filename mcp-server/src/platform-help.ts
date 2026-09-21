@@ -2631,7 +2631,20 @@ branch has more than one and you must name which.
 The API key can create and DELETE databases in your account, so it is stored
 for the control plane only and is never readable by anything on the deploy
 path. The connection string is stored separately and is the only one of the two
-that reaches your deployed functions. Neither is ever returned by any route.
+that reaches your deployed functions. Neither is returned by any of the
+management calls above.
+
+**The binding is not a secret sandbox against your own code.** The connection
+string is not published anywhere you would look for configuration — no
+environment variable, no management response — but it IS delivered to the
+official driver inside your function, in the same JavaScript realm your code
+runs in. So anything executing with your function's authority can observe it,
+and that includes your dependencies, not just the handler you wrote. Attaching
+a database is trusting your server code and its supply chain with that
+credential's authority. Two things follow: give the attached role only the
+privileges your handlers need, and remember that ROTATING THE CREDENTIAL at
+your provider — not disconnecting, not undeploying — is what actually revokes
+it.
 
 ## Changing or removing the connection
 
