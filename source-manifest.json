@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "source_repository": "Somewhere-Tech/somewhere-tech",
-  "source_ref": "ce3b02995adb842960fba79f5e27cc0433206d86",
-  "source_sha": "ce3b02995adb842960fba79f5e27cc0433206d86",
+  "source_ref": "250b1b76b1eff7e27698cfdda84527e8c81fd6aa",
+  "source_sha": "250b1b76b1eff7e27698cfdda84527e8c81fd6aa",
   "files": {
     ".cursor-plugin/plugin.json": {
       "bytes": 458,
@@ -25,8 +25,8 @@
       "sha256": "936621f490e5c921768246746ff7e08075a8767a2e47df70e7ab51f21e0a57db"
     },
     "mcp-server/scripts/test-claude-directory.mjs": {
-      "bytes": 10639,
-      "sha256": "4d867c0348e851417a9cf896b2372ef00738f935fd0e4a21ec61bab25a98be26"
+      "bytes": 10650,
+      "sha256": "34ad6051aec4038b46bec2bf84ba2b6343477411bbd6c82b033719774241fabd"
     },
     "mcp-server/scripts/test-json-rpc-response-envelope.mjs": {
       "bytes": 4845,
@@ -35,6 +35,10 @@
     "mcp-server/scripts/test-service-health.mjs": {
       "bytes": 1041,
       "sha256": "55f32b803822fb820900a17fd61e9db63e3a55d0a1972f103ead01bc4e56f0aa"
+    },
+    "mcp-server/src/account-identity.ts": {
+      "bytes": 4710,
+      "sha256": "4474822183dce5be3c36199b078cf735c13b44b0d5c0001b20a0796633f876a2"
     },
     "mcp-server/src/advisor-actions.ts": {
       "bytes": 3720,
@@ -129,16 +133,16 @@
       "sha256": "e2821fea6ca76f952a05c11e1fa397c08f607ea78cce4ca093baa37d8237976c"
     },
     "mcp-server/src/index.ts": {
-      "bytes": 927940,
-      "sha256": "fbd28862810bab0df9f16918d14633c53fee12f3983c284601d009d612377278"
+      "bytes": 924811,
+      "sha256": "796ae73813976b79a4eb36cf358c4562595739b9af0eae4f6a5e889998031381"
     },
     "mcp-server/src/platform-help-derived.ts": {
-      "bytes": 442999,
-      "sha256": "1387526c9c5ab0d3374def0e3df2d19a643f09e3b28dbe3a994d6ff7606a9c64"
+      "bytes": 448943,
+      "sha256": "5d2d9ed5f2eb4776c536d9058f3fa78308313ad68aa65d916dcff250fb937f3a"
     },
     "mcp-server/src/platform-help.ts": {
-      "bytes": 599203,
-      "sha256": "afe87ab71c5d160deed129f09c3e7c16a5ecd260a51b4f23d07dfbc390e757fe"
+      "bytes": 638161,
+      "sha256": "474476673bb32de455637caa6c872d9929135846e030f260bf389d5e04a4a0d9"
     },
     "mcp-server/src/project-deploy-input.ts": {
       "bytes": 967,

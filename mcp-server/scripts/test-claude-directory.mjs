@@ -28,7 +28,7 @@ async function rpc(method, params = {}, path = '/mcp/connector?groups=all') {
 }
 
 const listed = (await rpc('tools/list')).result.tools;
-assert.equal(listed.length, 51);
+assert.equal(listed.length, 52);
 for (const tool of listed) {
   assert.ok(tool.annotations.title?.trim(), `${tool.name}: a readable title`);
   assert.ok(tool.name.length <= 64);
@@ -117,7 +117,7 @@ for (const tool of chatgpt) {
     assert.equal(typeof tool.annotations?.[hint], 'boolean', `${tool.name}: ChatGPT emits ${hint}`);
   }
 }
-const expectedReadOnly = new Set(['catalog', 'db_describe', 'db_import', 'db_scope_list', 'deploy_status', 'docs', 'docs_query', 'errors', 'fs_read', 'project_deploys', 'project_docs', 'project_export', 'project_file_read', 'project_files_list', 'project_get', 'project_grep', 'project_list', 'project_view_urls', 'site_check_status', 'tasks_get', 'tasks_list']);
+const expectedReadOnly = new Set(['account', 'catalog', 'db_describe', 'db_import', 'db_scope_list', 'deploy_status', 'docs', 'docs_query', 'errors', 'fs_read', 'project_deploys', 'project_docs', 'project_export', 'project_file_read', 'project_files_list', 'project_get', 'project_grep', 'project_list', 'project_view_urls', 'site_check_status', 'tasks_get', 'tasks_list']);
 const expectedDestructive = new Set(['db_migrate', 'db_query', 'db_scope_set', 'fs_public_url', 'fs_upload', 'fs_write', 'project_archive', 'project_delete', 'project_delete_confirm', 'project_deploy', 'project_notice_acknowledge', 'project_patch', 'project_promote', 'project_rollback', 'run_code', 'security_review', 'support_ticket', 'tasks_update']);
 const expectedOpenWorld = new Set(['advisor', 'connector_link_email', 'fs_public_url', 'fs_upload', 'project_archive', 'project_delete_confirm', 'project_deploy', 'project_patch', 'project_promote', 'project_rollback', 'run_code', 'security_review', 'site_check', 'support_ticket', 'tasks_create', 'tasks_update']);
 for (const tool of chatgpt) {

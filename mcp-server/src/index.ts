@@ -44,6 +44,7 @@ import { catalogToolAvailability, searchCatalogEntries } from './catalog-search'
 import type { ToolSurface } from './surface-manifest.mjs';
 import { deliverClientSession } from './client-session-delivery';
 import { anonymousClaimPrompt, isAnonymousClaimPromptCandidate } from './anonymous-claim-prompt';
+import { projectAccountIdentity } from './account-identity';
 import {
   FileUploadError,
   parseConnectorFileReference,
@@ -281,6 +282,7 @@ interface McpToolExecutionRuntime extends ToolExecutionRuntime {
   caller: CallerKind;
   surface: ToolSurface;
   helpSessionId: string | null;
+  advisorTelemetry: AdvisorCallerTelemetry | null;
   toolName: string;
 }
 
@@ -933,7 +935,7 @@ function captureHelpResult(): ToolUpstreamResult {
     data: {
       summary: 'browser — the ONE capture surface: SEE / INSPECT / DRIVE any web page in a real headless browser, and take a picture OR a PDF of it. Two modes: EYES (perception, no project_id) and VERIFY (project QA, project_id). Omit actions/steps to inspect; add actions to drive. render_screenshot and render_pdf are deprecated aliases of this tool and still work.',
       modes: {
-        eyes: 'perception — NO project_id, any public url. Look at / inspect / screenshot ANY page. Screenshot returns inline (auto-downscaled) by default, or store:true → a short-TTL signed scratch_url (never durable storage). Lean payload; add include:["network","dom"] for the full data. No auth, no origin-lock.',
+        eyes: 'perception — NO project_id, any public url. Look at / inspect / screenshot ANY page. Screenshot returns inline (auto-downscaled) by default, or store:true → a short-TTL signed scratch_url (never durable storage). No-actions inspect includes the interactive-element map. An explicit include list selects sections; include "dom" to retain the map and "network" for the full request table. No auth, no origin-lock.',
         verify: 'project QA — pass project_id. Drive + assert YOUR deployed app: steps (click/fill/assert), auth:{user_id} (1h audited impersonation), screenshots stored durably to the project filesystem (fs_path). Origin-locked — a url must be on the project origin.',
       },
       targets: {
@@ -981,10 +983,10 @@ function captureHelpResult(): ToolUpstreamResult {
       expect_requests: [{ path: '/api/tasks', status: 401 }],
       visible_only: 'true filters dom_outline to visible controls; returned controls retain visible and disabled annotations.',
       frame: 'Add "frame":"name | url-substring | child-index | css-selector" to ANY step to run it inside an iframe (the wait/assert/eval/screenshot/snapshot then observes the FRAME). Unknown frame ERRORS.',
-      include: 'No-steps inspect calls are LEAN by default: console_errors / page_errors / failed_requests / rendered_text + a screenshot. Pass include:["network"] for the full per-request network table + redirect chain, include:["dom"] for dom_outline (the clickable-element map) + the testid handle map, and/or include:["markdown"] for the page as clean MARKDOWN.',
+      include: 'No-steps inspect includes console_errors / page_errors / failed_requests / rendered_text, a screenshot, and the bounded dom_outline + testid map. An explicit include list selects sections: "dom" retains the interactive-element map, "network" adds the full request table + redirect chain, and "markdown" adds clean page markdown. include:[] omits these optional sections. Steps runs need include:["dom"] to request the map.',
       extract: 'READ a page as clean markdown instead of vision-parsing the screenshot: extract:"markdown" (same as include:["markdown"]) returns the page content — headings, links, lists, main body — in the `markdown` field. The plain rendered text is always in `rendered_text`.',
       session_id: 'PERSISTENT SESSION: pass the same session_id across calls to keep ONE live browser page alive between them (navigate in call 1, wait for a stream + screenshot in call 2 — same page, cookies + current URL + in-flight stream preserved). Returns session_id + session_expires_at; a reconnect skips the initial navigation (use a goto step to move). Yours only, capped per developer, idles out ~3 min (~10 min hard cap); an expired session transparently restarts (session_note). Omit for the default fresh-per-call browser.',
-      signals: 'Response leads with console_errors / page_errors / failed_requests / request_expectations, THEN steps (each with ok + optional value/error), THEN screenshots, plus rendered_text when you omit actions/steps. An expected path+status is excluded from failed resource signals; a missing expectation or unexpected 4xx/5xx makes passed false.',
+      signals: 'Response leads with console_errors / page_errors / failed_requests / request_expectations, THEN steps (each with ok + optional value/error), THEN screenshots, plus rendered_text when you omit actions/steps. An expected path+status is excluded from failed resource signals; a missing expectation, unexpected 4xx/5xx, or failed requested capture makes passed false. Capture errors remain in screenshots[].error; automatic failure evidence is best-effort.',
       capture: 'The ONE output knob — capture: { as: "png" | "jpeg" | "webp" | "pdf", width, quality, full_page, paper, landscape, print_background }. `as` chooses picture or PRINT (a pdf comes out of this same call — there is no separate print tool). `full_page` captures the whole scrollable page. `width` shrinks the OUTPUT image (never upscales); it is NOT the layout size — that is `viewport`. `quality` applies to jpeg/webp; `paper`/`landscape`/`print_background` apply to pdf. Defaults: a small ~800px jpeg q70 for a page shot; png for an html snippet.',
       viewport: 'Real layout geometry: "desktop" (1280x800, default), "mobile" (390x844), or an explicit { "width": 1600, "height": 1200 } (100..3840 x 100..2160). Use this for responsive checks — capture.width only resizes the resulting image.',
       storage: 'A project files path for THE capture, e.g. "/renders/hero.webp" or "/invoices/inv-1.pdf" (requires project_id). Returns the stored path instead of inline bytes. Works with a url, an html snippet, or a steps run (captured last, after the flow). Step screenshots keep their own /_browser_tests/ run directory — one path cannot name many labelled images.',
@@ -1104,7 +1106,7 @@ Write calls require \`confirm:true\` by default. \`GET\` and \`HEAD\` run withou
     name: 'catalog',
     description: `The caller-visible index of available tools. Three reference surfaces have distinct effects: **catalog** lists which tools exist; **docs({ topic })** returns the static contract for one surface; **advisor({ question })** can answer open-ended questions from an authorized live project's state.
 
-catalog returns the directory / table of contents / manifest for every tool available to this caller on the active surface, grouped by category with a one-line summary per group: \`{ categories: { project: { summary, tools: [...] }, db: { summary, tools: [...] }, ... } }\`. Categories cover projects, deploys, database, files, env vars, end-user auth, email (out + inbox), AI (chat + media), jobs, cron, queue, logs, errors, usage, feedback, domains, search, web scraping, push, rate limiting, telegram, analytics, captcha, payments, realtime, video, calls, render, stock photos, and platform help.
+catalog returns the directory / table of contents / manifest for every tool available to this caller on the active surface, grouped by category with a one-line summary per group: \`{ categories: { project: { summary, tools: [...] }, db: { summary, tools: [...] }, ... } }\`. Categories cover projects, deploys, database, files, env vars, end-user auth, email (out + inbox), AI (chat + media), jobs, cron, queue, logs, errors, usage, feedback, domains, search, web scraping, push, rate limiting, telegram, analytics, captcha, payments, live updates, video, calls, render, stock photos, and platform help.
 
 For admin/operator callers the same response also includes every registered plain-English platform census question, symptom, and authority declaration. That is the discovery call before \`somewhere_tech_stats({ metric_id })\` or \`debug_project({ identifier, symptom })\`; no table name or SQL knowledge is required.
 
@@ -1485,7 +1487,7 @@ The response is plain markdown.`,
     surfaces: ["full","chatgpt"],
     protocol: { oauthScopes: ['mcp'] },
     execute: async (runtime, args) => {
-      const { env, authHeader, ctx, caller, surface, helpSessionId } = runtime;
+      const { env, authHeader, ctx, caller, surface, helpSessionId, advisorTelemetry } = runtime;
       {
         const startedAt = Date.now();
         const question = typeof args.question === 'string' ? args.question.trim() : '';
@@ -1523,7 +1525,7 @@ The response is plain markdown.`,
           latencyMs: Date.now() - startedAt,
           contextAttached: contextText !== null,
           contextText,
-        });
+        }, advisorTelemetry);
         if (ctx) ctx.waitUntil(logPromise); else void logPromise;
         return { content: [{ type: 'text', text: constrainedAnswer.text }] };
 
@@ -4908,6 +4910,71 @@ Pass \`intent: "shared"\` to mark a SQL-mode table as intentionally cross-user, 
   // ── auth ─────────────────────────────────────────────
   {
     definition: {
+    name: 'account',
+    description: `Which somewhere.tech account is this session connected as? Takes no arguments and reads only the caller's own account.
+
+Use it to answer "who am I connected as" without guessing a route or inferring an identity from the project list.
+
+**Example:**
+
+\`\`\`json
+{}
+// Returns: { "id": "u_abc", "email": "alice@example.com", "name": "Alice",
+//            "anonymous": false, "email_verified": true, "tier": "builder",
+//            "summary": "Connected as Alice (alice@example.com). The email address is verified." }
+\`\`\`
+
+This is the DEVELOPER ACCOUNT holding the projects. For the end user of a customer's app, use \`auth_me\` with that user's app token.`,
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+    annotations: { title: 'Show connected account', readOnlyHint: true, idempotentHint: true },
+    group: 'auth',
+    core: true,
+    coreRank: 111,
+    visibility: 'authenticated',
+    paid: false,
+    surfaces: ["full","connector","chatgpt"],
+    protocol: {
+      oauthScopes: ['mcp'],
+      surfaceDescriptions: {
+        connector: 'Which somewhere.tech account this connector is signed in as. No arguments; reads only the caller\'s own account.',
+        chatgpt: 'Which somewhere.tech account this connection is signed in as. No arguments; reads only the caller\'s own account.',
+      },
+      surfaceAnnotations: {
+        connector: { title: 'Account', readOnlyHint: true },
+        chatgpt: { title: 'Account', readOnlyHint: true },
+      },
+    },
+    execute: async (runtime) => {
+      // The same verified authority the claim prompt already reads. It resolves
+      // platform/mcp_oauth tokens and developer/cli_pair keys, so no surface
+      // needs auth it did not already have.
+      const result = await runtime.callApi('GET', '/v1/auth/platform-me');
+      if (result.status >= 400) return result;
+      const identity = projectAccountIdentity(result.data);
+      // A 2xx whose shape this does not recognise is NOT passed through: the
+      // raw envelope carries fields the allowlist exists to keep out, so
+      // returning it would defeat the whole promise on exactly the path where
+      // the shape is already unexpected. Refuse with a bounded error instead —
+      // a wrong or over-broad answer to "who am I" is worse than no answer.
+      if (!identity) {
+        return {
+          status: 502,
+          data: {
+            error: 'ACCOUNT_IDENTITY_UNAVAILABLE',
+            message: 'The connected account could not be read right now. Nothing else was changed — try again.',
+          },
+        };
+      }
+      return { status: result.status, data: identity };
+    },
+  },
+  {
+    definition: {
     name: 'auth_signup',
     description: `Register user, create account, new user, sign up, onboard user — sign up a new end user for your app. Returns the user ID and authentication token. Passwords are securely hashed. Call this from your server-side code, not from browser code.
 
@@ -7972,7 +8039,7 @@ cadence they were created with.
   {
     definition: {
     name: 'cron_list',
-    description: 'List cron triggers for a project (or all your projects). Each row includes timezone, last_run_at, last_run_status, and next_run_at. Passing project_id also returns `policy` — the project owner\'s plan name, the smallest interval a new or edited schedule may have, and how many scheduled tasks the project may hold.',
+    description: 'List cron triggers for a project (or all your projects). Each row includes timezone, last_run_at, last_run_status, last_run_job_id, bounded last_error_code/last_error diagnostics, and next_run_at. A task that has never run returns null for every last-run field. Use last_run_job_id with job_get for full bounded attempt history. Passing project_id also returns `policy` — the project owner\'s plan name, the smallest interval a new or edited schedule may have, and how many scheduled tasks the project may hold.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -9600,12 +9667,12 @@ Each photo includes a photographer name and source URL. Display attribution some
 \`\`\`
 
 **Pick your mode:**
-- **EYES (perception)** — NO \`project_id\`, any public \`url\` (e.g. \`{ "url": "https://example.com" }\`): look at / inspect / screenshot ANY page. Ephemeral output — the screenshot returns **inline** (auto-downscaled to fit) by default, or pass \`store:true\` for a short-TTL signed scratch URL (\`screenshots[].scratch_url\`, never durable project storage). Lean payload by default; add \`include:["network","dom"]\` for the full network table + clickable-element map. No auth, no origin-lock — point it at anything.
+- **EYES (perception)** — NO \`project_id\`, any public \`url\` (e.g. \`{ "url": "https://example.com" }\`): look at / inspect / screenshot ANY page. Ephemeral output — the screenshot returns **inline** (auto-downscaled to fit) by default, or pass \`store:true\` for a short-TTL signed scratch URL (\`screenshots[].scratch_url\`, never durable project storage). No-actions inspect includes the bounded clickable-element map. An explicit \`include\` list selects sections; use \`include:["network","dom"]\` for the full network table and the map. No auth, no origin-lock — point it at anything.
 - **VERIFY (project QA)** — pass \`project_id\`: drive + assert YOUR deployed app. Add \`actions\` to click / fill / assert a flow, \`auth:{ "user_id": "…" }\` to run it as a logged-in user (1h audited impersonation), and screenshots store durably to the project filesystem (\`screenshots[].fs_path\`). Origin-locked — a \`url\` must be on the project's own origin.
 
 Same engine and the same signals-first report either way. Each completed page run also returns one \`accessibility_layout\` line for WCAG AA text contrast, horizontal overflow, and tap targets below 44×44px. Those findings are advisory and never change \`passed\`.
 
-- **Omit \`actions\`** → you get a LEAN health snapshot by default: console errors, page errors, failed network requests (the 4xx/5xx + dropped calls — the real signal), the rendered page text (\`rendered_text\` — grep-able structured text beats a screenshot ~80% of the time), \`final_url\`, and a small screenshot. The heavy bits are opt-in via \`include\`: pass \`include:["network"]\` for the full per-request \`network\` table (method/status/timing) + redirect chain, and/or \`include:["dom"]\` for the interactive-element map (\`dom_outline\` — every button/input/link with a selector) + the testid handle map. This is the quick "what does my app look like and is it healthy" call (it replaces a standalone screenshot). That page screenshot comes back **inline as an MCP image content block by default** (it renders directly in the conversation) while its file path stays in the output as the durable artifact; pass \`inline:false\` to skip the inline image and keep only the path. An oversized capture on a tall/heavy page is auto-downscaled to fit inline — a no-\`project_id\` call still returns a real image in one shot.
+- **Omit \`actions\`** → you get a health snapshot by default: console errors, page errors, failed network requests (the 4xx/5xx + dropped calls — the real signal), the rendered page text (\`rendered_text\` — grep-able structured text beats a screenshot ~80% of the time), \`final_url\`, a small screenshot, and a bounded interactive-element map (\`dom_outline\` + testid handles). An explicit \`include\` list selects optional sections: \`include:["network","dom"]\` retains the map and adds the full per-request \`network\` table + redirect chain; \`include:[]\` omits both. This is the quick "what does my app look like and is it healthy" call (it replaces a standalone screenshot). That page screenshot comes back **inline as an MCP image content block by default** (it renders directly in the conversation) while its file path stays in the output as the durable artifact; pass \`inline:false\` to skip the inline image and keep only the path. An oversized capture on a tall/heavy page is auto-downscaled to fit inline — a no-\`project_id\` call still returns a real image in one shot.
 - **Add \`actions\`** → use the same concise action-sequence JSON as the CLI: \`{click}\`, \`{fill,value}\`, \`{upload,file,name?}\`, \`{select,value}\`, \`{wait}\`, \`{expect}\`, \`{screenshot}\`, and \`{eval}\`. Every item reports ok/fail with a reason, and the first failure stops the sequence.
 - Existing expanded \`steps\` remain accepted for older callers; new flows use the shared \`actions\` shape above.
 - **Pass \`url\` with NO \`project_id\`** → capture/inspect ANY public third-party page (e.g. \`{ "url": "https://example.com" }\`), not just your own app. (When you DO pass \`project_id\`, \`url\` is scoped to that project's origin.) The screenshot comes back inline by default; add \`store:true\` to instead get a short-lived, auto-expiring signed URL to the full-res image (\`screenshots[].scratch_url\`) — handy for a big external capture you'd rather link than inline. It's kept in an ephemeral scratch store and never touches project storage.
@@ -11365,200 +11432,10 @@ The first call generates a per-project secret you'll see in the response (\`secr
       }
     },
   },
-  // ── realtime ─────────────────────────────────────────────
+  // ── signed system channels ───────────────────────────────
   {
     definition: {
-    name: 'realtime_publish',
-    description: `**Fanning an event out to server-side consumers you run?** \`realtime_publish\` delivers to every socket subscribed to a channel. Channels are DEVELOPER AUTHORITY ONLY — an app-user or anonymous browser session is refused on subscribe and publish alike (\`CHANNEL_FORBIDDEN\`), so this does not reach your app's visitors. For a browser, declare a live view server-side with \`sw.db.live(name, sw.db.from(...))\` and subscribe with \`watchLive\`. Realtime is not durable history; write the source of truth to the database first. Channel names must match \`[a-zA-Z0-9][a-zA-Z0-9_\\-:.]{0,127}\`. Payloads are JSON-serialized and capped at 64 KB. Free plan supports 100,000 publishes/month; Builder is unlimited.
-
-**Example:**
-
-\`\`\`json
-{
-  "project_id": "my-saas",
-  "channel": "dashboard:updates",
-  "event": "new_order",
-  "data": { "order_id": "ord_123", "total": 49.99 }
-}
-\`\`\`
-
-**Subscribe (server-side consumer, developer key on the URL — never ship this key to a browser):**
-
-\`\`\`javascript
-const ws = new WebSocket("wss://api.somewhere.tech/v1/realtime/subscribe?project_id=my-saas&channel=dashboard:updates&token=smt_...");
-ws.onmessage = (e) => console.log(JSON.parse(e.data));
-\`\`\``,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        project_id: { type: 'string', description: "Project ID (UUID), subdomain, or slug — resolved server-side, no UUID lookup needed. 'default' also works when the account has exactly one project; multi-project accounts must name one (the error lists them)." },
-        channel: { type: 'string', description: 'Channel name scoped within the project.' },
-        event: { type: 'string', description: "Event name. Defaults to 'message'." },
-        data: { type: ['string', 'object'], description: 'Payload to publish. Any JSON value (object, array, or JSON string).' },
-        from: { type: 'string', description: 'Optional sender label attached to the envelope.' },
-      },
-      required: ['project_id', 'channel', 'data'],
-    },
-  },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
-    group: 'realtime',
-    core: true,
-    coreRank: 57,
-    visibility: 'authenticated',
-    paid: false,
-    surfaces: ["full"],
-    execute: async (runtime, args) => {
-      const { fetcher, authHeader } = runtime;
-      let result: ToolUpstreamResult;
-      {
-        const data = parseJsonArg(args.data, 'data');
-        result = await callAPI(fetcher, 'POST', `/v1/realtime/publish`, authHeader, {
-          project_id: args.project_id,
-          channel: args.channel,
-          event: args.event,
-          data,
-          from: args.from,
-        });
-        return result;
-
-      }
-    },
-  },
-  {
-    definition: {
-    name: 'realtime_channels',
-    description: `**Debugging a live screen or checking whether anyone is listening before you publish?** List channels with subscribers or recent publishes in the last 10 minutes. Each entry includes the current subscriber count and last publish timestamp.
-
-**Example:**
-
-\`\`\`json
-{ "project_id": "my-saas" }
-// Returns: { "channels": [{ "channel": "dashboard:updates", "subscribers": 3, "last_publish_at": "2026-05-11T14:32:00Z", "updated_at": "..." }] }
-\`\`\``,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        project_id: { type: 'string', description: "Project ID (UUID), subdomain, or slug — resolved server-side, no UUID lookup needed. 'default' also works when the account has exactly one project; multi-project accounts must name one (the error lists them)." },
-      },
-      required: ['project_id'],
-    },
-  },
-    annotations: { readOnlyHint: true, idempotentHint: true },
-    group: 'realtime',
-    core: false,
-    visibility: 'authenticated',
-    paid: false,
-    surfaces: ["full"],
-    execute: async (runtime, args) => {
-      const { fetcher, authHeader } = runtime;
-      let result: ToolUpstreamResult;
-      {
-        const pid = encodeURIComponent(args.project_id as string);
-        result = await callAPI(fetcher, 'GET', `/v1/realtime/channels?project_id=${pid}`, authHeader);
-        return result;
-
-      }
-    },
-  },
-  {
-    definition: {
-    name: 'realtime_broadcast',
-    description: `[Legacy] Fan out a message to every subscriber on a channel. Developer authority only — app-user and anonymous sessions cannot subscribe, so this does not reach browser clients. Channel names must match \`[a-zA-Z0-9][a-zA-Z0-9_\\-:.]{0,127}\`. Messages are JSON-serialized and capped at 64 KB. Prefer realtime_publish for new code — it supports a named event field and matches the WebSocket envelope shape.
-
-**Example:**
-
-\`\`\`json
-{
-  "project_id": "my-saas",
-  "channel": "dashboard:updates",
-  "message": { "event": "new_order", "order_id": "ord_123", "total": 49.99 }
-}
-\`\`\`
-
-**Subscription (server-side consumer, developer key):**
-
-\`\`\`javascript
-const ws = new WebSocket("wss://api.somewhere.tech/v1/realtime/subscribe?project_id=my-saas&channel=dashboard:updates&token=smt_...");
-ws.onmessage = (e) => {
-  const data = JSON.parse(e.data);
-  console.log("New event:", data);
-};
-\`\`\``,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        project_id: { type: 'string', description: "Project ID (UUID), subdomain, or slug — resolved server-side, no UUID lookup needed. 'default' also works when the account has exactly one project; multi-project accounts must name one (the error lists them)." },
-        channel: { type: 'string', description: 'Channel name scoped within the project.' },
-        message: { type: ['string', 'object'], description: 'Payload to broadcast (object or JSON string).' },
-        from: { type: 'string', description: 'Optional sender label attached to the envelope.' },
-      },
-      required: ['project_id', 'channel', 'message'],
-    },
-  },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
-    group: 'realtime',
-    core: false,
-    visibility: 'authenticated',
-    paid: false,
-    surfaces: ["full"],
-    execute: async (runtime, args) => {
-      const { fetcher, authHeader } = runtime;
-      let result: ToolUpstreamResult;
-      {
-        const channel = encodeURIComponent(args.channel as string);
-        const message = parseJsonArg(args.message, 'message');
-        result = await callAPI(fetcher, 'POST', `/v1/realtime/channels/${channel}/broadcast`, authHeader, {
-          project_id: args.project_id,
-          message,
-          from: args.from,
-        });
-        return result;
-
-      }
-    },
-  },
-  {
-    definition: {
-    name: 'realtime_meta',
-    description: `Get subscriber count and last-message timestamp for a realtime channel. Useful for "is anyone listening?" checks before broadcasting.
-
-**Example:**
-
-\`\`\`json
-{ "project_id": "my-saas", "channel": "dashboard:updates" }
-// Returns: { "subscribers": 3, "last_message_at": "2026-04-20T14:32:00Z" }
-\`\`\``,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        project_id: { type: 'string', description: "Project ID (UUID), subdomain, or slug — resolved server-side, no UUID lookup needed. 'default' also works when the account has exactly one project; multi-project accounts must name one (the error lists them)." },
-        channel: { type: 'string', description: 'Channel name.' },
-      },
-      required: ['project_id', 'channel'],
-    },
-  },
-    annotations: { readOnlyHint: true, idempotentHint: true },
-    group: 'realtime',
-    core: true,
-    coreRank: 99,
-    visibility: 'authenticated',
-    paid: false,
-    surfaces: ["full"],
-    execute: async (runtime, args) => {
-      const { fetcher, authHeader } = runtime;
-      let result: ToolUpstreamResult;
-      {
-        const channel = encodeURIComponent(args.channel as string);
-        const pid = encodeURIComponent(args.project_id as string);
-        result = await callAPI(fetcher, 'GET', `/v1/realtime/channels/${channel}/meta?project_id=${pid}`, authHeader);
-        return result;
-
-      }
-    },
-  },
-  {
-    definition: {
-    name: 'realtime_subscribe_project',
+    name: 'events_subscribe_project',
     description: `Get the connection recipe for the project's system channel. The platform automatically pushes lifecycle events to this channel — deploys, quota warnings, database health, and auth admin actions. Subscribe once and you get notified the moment any of these happen.
 
 Event shapes the channel emits (\`event\` field on the WebSocket envelope):
@@ -11575,7 +11452,7 @@ Event shapes the channel emits (\`event\` field on the WebSocket envelope):
 // Returns:
 // {
 //   "channel": "system:project",
-//   "websocket_url": "wss://api.somewhere.tech/v1/realtime/subscribe?project_id=my-saas&channel=system:project&token=smt_...",
+//   "websocket_url": "wss://api.somewhere.tech/v1/events/subscribe?project_id=my-saas&channel=system:project&token=smt_...",
 //   "event_types": ["deployed", "patched", "restored", "rolled_back", "db_health", "quota_warning", "auth_event"]
 // }
 \`\`\``,
@@ -11588,7 +11465,7 @@ Event shapes the channel emits (\`event\` field on the WebSocket envelope):
     },
   },
     annotations: { readOnlyHint: true, idempotentHint: true },
-    group: 'realtime',
+    group: 'live',
     core: false,
     visibility: 'authenticated',
     paid: false,
@@ -11611,7 +11488,7 @@ Event shapes the channel emits (\`event\` field on the WebSocket envelope):
             ok: true,
             data: {
               channel: 'system:project',
-              websocket_url: `wss://api.somewhere.tech/v1/realtime/subscribe?project_id=${pid}&channel=system:project&token=${encodeURIComponent(token)}`,
+              websocket_url: `wss://api.somewhere.tech/v1/events/subscribe?project_id=${pid}&channel=system:project&token=${encodeURIComponent(token)}`,
               event_types: ['deployed', 'patched', 'restored', 'rolled_back', 'db_health', 'quota_warning', 'auth_event'],
             },
           },
@@ -11623,7 +11500,7 @@ Event shapes the channel emits (\`event\` field on the WebSocket envelope):
   },
   {
     definition: {
-    name: 'realtime_subscribe_user',
+    name: 'events_subscribe_user',
     description: `Get the connection recipe for the caller's personal system channel. The platform pushes user-scoped events here that aren't tied to one project — currently \`feedback_resolved\` when the platform team responds to or resolves a \`support_ticket\` ticket.
 
 Auth: developer smt_ key only. The channel is bound to the caller's own user id — there is no cross-user subscribe.
@@ -11635,7 +11512,7 @@ Auth: developer smt_ key only. The channel is bound to the caller's own user id 
 // Returns:
 // {
 //   "channel": "system:user",
-//   "websocket_url": "wss://api.somewhere.tech/v1/realtime/subscribe-user?token=smt_...",
+//   "websocket_url": "wss://api.somewhere.tech/v1/events/subscribe-user?token=smt_...",
 //   "event_types": ["feedback_resolved"]
 // }
 \`\`\``,
@@ -11646,7 +11523,7 @@ Auth: developer smt_ key only. The channel is bound to the caller's own user id 
     },
   },
     annotations: { readOnlyHint: true, idempotentHint: true },
-    group: 'realtime',
+    group: 'live',
     core: false,
     visibility: 'authenticated',
     paid: false,
@@ -11662,7 +11539,7 @@ Auth: developer smt_ key only. The channel is bound to the caller's own user id 
             ok: true,
             data: {
               channel: 'system:user',
-              websocket_url: `wss://api.somewhere.tech/v1/realtime/subscribe-user?token=${encodeURIComponent(token)}`,
+              websocket_url: `wss://api.somewhere.tech/v1/events/subscribe-user?token=${encodeURIComponent(token)}`,
               event_types: ['feedback_resolved'],
             },
           },
@@ -13700,7 +13577,7 @@ const CATALOG_CATEGORIES: Array<{
   { key: 'security', summary: 'CAPTCHA — invisible bot challenge for forms', aliases: ['captcha', 'bot protection', 'recaptcha'] },
   { key: 'payments', summary: 'Payments (Stripe Connect) — onboard, checkout, refund, transactions, subscription portal', aliases: ['stripe', 'checkout', 'subscription', 'invoice', 'billing customer'] },
   { key: 'connect', summary: 'Connected accounts — a customer\'s linked Stripe account: connect link, status, subscribers, disconnect', aliases: ['stripe connect', 'oauth connections', 'linked accounts', 'connected account'] },
-  { key: 'realtime', summary: 'Realtime WebSockets — publish/broadcast, channel metadata, subscribe tokens', aliases: ['websocket', 'pubsub', 'live', 'pusher', 'ably'] },
+  { key: 'live', summary: 'Live updates — subscribe to the signed platform system channels (deploys, quota, auth admin, support replies). Browser live data comes from a declared sw.db.live view, not a caller-named channel.', aliases: ['websocket', 'live updates', 'system channel', 'deploy events', 'subscribe'] },
   { key: 'video', summary: 'Video streaming — upload videos, list, get playback info, delete', aliases: ['stream', 'mux', 'hls', 'playback'] },
   { key: 'calls', summary: 'Voice/video calls — WebRTC SFU session tokens for Zoom/Twilio-style calls', aliases: ['webrtc', 'sfu', 'voip', 'twilio', 'zoom', 'meet'] },
   { key: 'api', summary: 'Generic platform API calls — use /v1 endpoints that do not have a dedicated MCP tool yet', aliases: ['rest', 'endpoint', 'long tail', 'generic api', 'v1'] },
@@ -14867,6 +14744,27 @@ async function hmacSha256Hex(secret: string, input: string): Promise<string> {
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+interface AdvisorCallerTelemetry {
+  subjectHash: string;
+  ipHash: string;
+}
+
+async function advisorCallerTelemetry(
+  env: Env,
+  request: Request,
+  authHeader: string,
+): Promise<AdvisorCallerTelemetry | null> {
+  if (!env.SOMEWHERE_TECH_ADMIN_KEY) return null;
+  const ip = request.headers.get('CF-Connecting-IP')
+    || request.headers.get('X-Forwarded-For')?.split(',')[0]?.trim()
+    || 'unknown';
+  const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  return {
+    subjectHash: await hmacSha256Hex(env.SOMEWHERE_TECH_ADMIN_KEY, bearer || ip),
+    ipHash: await hmacSha256Hex(env.SOMEWHERE_TECH_ADMIN_KEY, ip),
+  };
+}
+
 /** Soft fixed-window limiter keyed by both client IP and a hash of the
  *  bearer. Returns allowed:false once either scope passes the limit.
  *  No-ops (allowed) when ADVISOR_RL_KV is unbound — verifyBearerUpstream
@@ -15055,6 +14953,7 @@ interface AdvisorAccess {
   mode: AdvisorAuthMode;
   serviceTier: 'flex' | 'default';
   retryAfterS: number;
+  telemetry: AdvisorCallerTelemetry | null;
 }
 
 /** Atomic anonymous gate in the API worker. The raw address never crosses the
@@ -15098,16 +14997,20 @@ async function authorizeAdvisorCall(
   source: AdvisorSource,
 ): Promise<AdvisorAccess | null> {
   if (!authHeader) {
-    const gate = await checkAnonymousAdvisorRateLimit(env, request, source);
+    const [gate, telemetry] = await Promise.all([
+      checkAnonymousAdvisorRateLimit(env, request, source),
+      advisorCallerTelemetry(env, request, ''),
+    ]);
     return gate.allowed
-      ? { mode: 'anonymous', serviceTier: 'flex', retryAfterS: 0 }
-      : { mode: 'anonymous', serviceTier: 'flex', retryAfterS: gate.retryAfterS };
+      ? { mode: 'anonymous', serviceTier: 'flex', retryAfterS: 0, telemetry }
+      : { mode: 'anonymous', serviceTier: 'flex', retryAfterS: gate.retryAfterS, telemetry };
   }
   if (!(await verifyBearerUpstream(env, authHeader))) return null;
   const rate = await checkAdvisorRateLimit(env, request, authHeader);
+  const telemetry = await advisorCallerTelemetry(env, request, authHeader);
   return rate.allowed
-    ? { mode: 'authenticated', serviceTier: 'default', retryAfterS: 0 }
-    : { mode: 'authenticated', serviceTier: 'default', retryAfterS: rate.retryAfterS };
+    ? { mode: 'authenticated', serviceTier: 'default', retryAfterS: 0, telemetry }
+    : { mode: 'authenticated', serviceTier: 'default', retryAfterS: rate.retryAfterS, telemetry };
 }
 
 /** Load authorized project facts under a shared deadline. Failed reads are
@@ -15549,6 +15452,7 @@ async function logAdvisorQuery(
     contextAttached: false,
     contextText: null,
   },
+  telemetry: AdvisorCallerTelemetry | null = null,
 ): Promise<void> {
   if (!env.SOMEWHERE_TECH_ADMIN_KEY) return;
   const auditPromise = logHelpCall(env, authHeader, {
@@ -15581,6 +15485,9 @@ async function logAdvisorQuery(
         auth_mode: authMode,
         source,
         service_tier: answer.service_tier,
+        subject_hash: telemetry?.subjectHash ?? null,
+        ip_hash: telemetry?.ipHash ?? null,
+        provider_attempted: (answer.diagnostics?.attempts.length ?? 0) > 0,
       }),
     });
     await env.API_SERVICE.fetch(req);
@@ -15704,7 +15611,7 @@ async function handlePublicAdvisor(
       latencyMs: answer.latency_ms,
       contextAttached: contextText !== null,
       contextText,
-    }));
+    }, access.telemetry));
     return jsonResponse({
       ok: true,
       data: {
@@ -16662,6 +16569,7 @@ async function executeTool(
   surface: ToolSurface = 'full',
   traceContext?: ModernTraceContext,
   helpSessionId: string | null = null,
+  advisorTelemetry: AdvisorCallerTelemetry | null = null,
 ): Promise<ToolExecutionResult> {
   const guardedEnv = authBoundary.wrapEnv(env);
   guardedEnv.API_SERVICE = traceContextFetcher(guardedEnv.API_SERVICE, traceContext);
@@ -16716,6 +16624,7 @@ async function executeTool(
       caller,
       surface,
       helpSessionId,
+      advisorTelemetry,
       toolName,
     }, args);
     if ('content' in outcome) return outcome;
@@ -17732,6 +17641,7 @@ async function handleMCPRequest(request: Request, env: Env, ctx: ExecutionContex
         // Verify it for real against the auth layer BEFORE spending, and
         // rate-limit verified callers so a valid key can't run up
         // unbounded cost. tsk_f9c77079.
+        let advisorTelemetry: AdvisorCallerTelemetry | null = null;
         if (toolUsesMcpNativePaidResource(toolName)) {
           const authVerdict = await classifyHandshakeBearer(env, authHeader);
           if (authVerdict === 'rejected') {
@@ -17772,6 +17682,7 @@ async function handleMCPRequest(request: Request, env: Env, ctx: ExecutionContex
               isError: true,
             });
           }
+          advisorTelemetry = await advisorCallerTelemetry(env, request, authHeader);
         }
 
         // Caller-aware help (tsk_8b3422b3): classify the calling agent from
@@ -17801,6 +17712,7 @@ async function handleMCPRequest(request: Request, env: Env, ctx: ExecutionContex
             activeSurface,
             modern?.traceContext,
             helpSessionIdForRequest(request, modern?.traceContext),
+            advisorTelemetry,
           );
           // This is the single authenticated tool-response boundary. Inner
           // handlers may catch/translate ordinary upstream failures, but a

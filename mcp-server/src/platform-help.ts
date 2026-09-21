@@ -117,6 +117,28 @@ of view even when its scope is \`owner()\`.
   fields cannot be generic browser create/update fields, and a browser-created
   row must default private. Public never means writable: an authorized server
   handler publishes a row with \`sw.db.server.update\`. Public live views are unavailable; public list/get calls refresh normally.
+  Public results may be served from a shared copy kept close to readers, so
+  a \`list\`, \`get\` or related-record page read by someone who is not
+  signed in is not always exact. A committed declared write to the table —
+  \`create\` / \`update\` / \`delete\` from the browser client,
+  \`sw.db.insert\` / \`update\` / \`remove\`, a \`sw.db.tx\` batch, or
+  their \`sw.db.server\` forms — drops the stored public results for that
+  table, so the change usually reaches the next anonymous reader within a
+  second or two. The drop lands a fraction of a second after the write's own
+  response, so the literal next read can still be the old answer. If a drop
+  does not reach every location, the old answer is served for at most about
+  two minutes, measured from when the database produced it: an expired copy
+  is fetched fresh, never served, and a failed refresh is an error, never the
+  old answer. A new release never answers from copies stored under the
+  previous one. Two limits worth designing around: withdrawing something
+  public is not instantaneous, and SQL you run yourself as the developer (the
+  \`db_query\` tool, the CLI, or the REST database endpoint) is not a
+  declared operation, so it is picked up only when the copy expires. Any
+  request carrying a session cookie, a visitor cookie or an
+  \`Authorization\` header is answered live: every signed-in, visitor,
+  owner and member read is exact, every write is exact, and a browser that
+  has just written through the data client reads live for a short while and
+  sees its own write.
 - \`identity\`: \`'authenticated'\`, or \`'visitor'\` on a table that allows
   visitors (below).
 
@@ -155,6 +177,35 @@ await data.notes.create({ title: 'Hi', body: '' });
 await data.notes.update(id, { pinned: 1 });
 await data.notes.delete(id);
 \`\`\`
+
+A \`read\` grant also gives the client \`aggregate\`: count, sum, avg, min
+and max over the readable fields, optionally grouped, with the same row
+permissions composed into the question — the numbers describe only rows this
+caller may read, and on a table with \`publicRead\` an anonymous call
+summarises the published rows only.
+
+\`\`\`ts
+const totals = await data.orders.aggregate({ count: true, sum: 'amount' });
+// totals.data: exactly one row — [{ count: 12, sum_amount: 4800 }]
+const byStatus = await data.orders.aggregate({
+  count: true, avg: 'amount', groupBy: ['status'],
+  where: { archived: false }, having: { count: { gte: 2 } },
+  order: [['count', 'desc']], limit: 20,
+});
+// byStatus.data: one row per group — [{ status: 'paid', count: 9, avg_amount: 410 }, …]
+// byStatus.has_more: true when more groups exist than the limit allowed
+\`\`\`
+
+\`sum\` and \`avg\` accept only readable fields declared \`integer\` or
+\`number\`; \`min\`, \`max\` and \`groupBy\` accept any readable field
+except \`json\` and \`blob\`. Result keys are composed by the platform:
+\`count\`, \`sum_<field>\`, \`avg_<field>\`, \`min_<field>\`,
+\`max_<field>\`. \`where\` takes the same equality filters as \`list\`;
+\`having\` filters result keys with one of \`eq\`, \`ne\`, \`lt\`,
+\`lte\`, \`gt\`, \`gte\`; \`order\` may name only a \`groupBy\` field
+or a result key. A grouped call returns at most \`limit\` groups (1–100,
+default 100) and reports \`has_more\`; an ungrouped call is always exactly
+one row and carries no \`has_more\`.
 
 Only the operations you enabled exist on the client; a disabled one is absent,
 not a runtime error. Every call carries the digest of the whole declaration it was generated
@@ -206,6 +257,15 @@ page. Parent and child reads are separate, so the result is not an atomic
 snapshot. Relation writes, nested relationships and automatic inheritance of
 parent permissions are not part of this operation.
 
+The inverse direction is \`belongsTo\`: declare
+\`relations: { project: belongsTo('projects', 'project_id') }\` on \`tasks\`,
+the table that holds the key. The generated client adds no method for it — a
+task's readable \`project_id\` is already on the row, and the parent is an
+ordinary \`data.projects.get(task.project_id)\` under the parent's own read
+grant. In a server function, \`sw.db.from('tasks', { include: ['project'] })\`
+nests the parent row on each task, or \`null\` when the caller may not read it
+(\`docs({ topic: 'sw.db' })\`).
+
 Local \`somewhere typecheck\` and \`somewhere dev\` resolve \`somewhere:data\` with
 the current CLI (\`npm i -g @somewhere-tech/cli@latest\` if yours predates this
 contract); \`somewhere deploy-check\` compiles on the platform regardless.
@@ -214,8 +274,14 @@ contract); \`somewhere deploy-check\` compiles on the platform regardless.
 
 - Default: \`sw.db.from / insert / update / remove\` run as the calling member
   and the same ownership rule applies. \`owner()\` tables need no auth guard.
+- \`sw.db.aggregate(table, { count, sum, avg, min, max, groupBy, where,
+  having, order, limit })\` composes count / sum / avg / min / max with the
+  same row permissions; \`include\` and \`has\` on \`sw.db.from\` compose
+  declared \`hasMany\` / \`belongsTo\` relations. The contract is in
+  \`docs({ topic: 'sw.db' })\`.
 - Intentional cross-user reads (admin screens, aggregates, background jobs):
-  pass \`{ asServer: true }\` to \`sw.db.from\` or \`sw.db.count\`.
+  pass \`{ asServer: true }\` to \`sw.db.from\`, \`sw.db.count\` or
+  \`sw.db.aggregate\`, or use \`sw.db.server.from / count / aggregate\`.
 - Intentional cross-user writes: authorize the caller yourself, then use
   \`sw.db.server.insert / update / remove\`, or \`sw.db.server.tx\` for a closed
   batch applied atomically. Batches (\`sw.db.tx\` and \`sw.db.server.tx\`) do not
@@ -226,7 +292,10 @@ contract); \`somewhere deploy-check\` compiles on the platform regardless.
   declared-schema projects. For a raw read that structured calls cannot
   express, authorize the caller yourself and use \`sw.db.server.query\` or
   \`sw.db.server.batch\`. These explicit server-authority calls do not apply
-  declared row permissions. Managed raw writes remain refused.
+  declared row permissions. Managed raw writes remain refused. They also reach
+  the database over a separate read-only route and cost meaningfully more per
+  call than a composed one, so send independent raw reads as a single
+  \`sw.db.server.batch\` — \`docs({ topic: 'speed' })\`.
 
 ## Restore and existing databases
 
@@ -353,8 +422,8 @@ for an intentional raw read, authorize the caller and use
 use that explicit server-authority path. Passing the retired
 third scope argument throws \`SCOPE_ARGUMENT_REMOVED\`. Responses match
 \`sw.db.query\` (\`{ data, error, count, last_row_id, changes }\`; \`count()\`
-returns exactly \`{ data, error }\`); mutations \`RETURNING *\` and publish
-the \`db:<table>\` realtime event. The \`last_row_id\` result field is always
+returns exactly \`{ data, error }\`); mutations \`RETURNING *\`. The
+\`last_row_id\` result field is always
 null; read an inserted ID from its returned row in \`data\`.
 
 The release records the DECLARED shape, never a reconstruction from
@@ -400,7 +469,7 @@ No tokens land in JS or localStorage; \`error.message\` carries the real cause
 \`{ cookie_session: true, user }\`.
 
 Scope boundary: \`functions.invoke()\` also rides that cookie. Direct
-\`from()\`, storage, and realtime calls go to the platform API. Legacy
+\`from()\`, storage, and channel calls go to the platform API. Legacy
 bearer-based browser calls remain operational and warn before any future
 enforcement; cookie sign-in deliberately does not credential those surfaces.
 Node/CLI keep header mode (tokens in SDK memory); pass
@@ -434,7 +503,7 @@ await client.storage.from('avatars').remove(['me.png'])
 
 ## Live updates — not client.channel
 
-The adapter exposes \`client.channel(name)\`, but realtime channels refuse
+The adapter exposes \`client.channel(name)\`, but the channel transport refuses
 app-user and visitor sessions (\`CHANNEL_FORBIDDEN\`, 403), so it cannot
 work from a browser. The live path a browser can use is a declared live view:
 the function returns rows plus a subscription URL, and \`watchLive\` re-reads
@@ -450,7 +519,7 @@ watchLive(
 \`\`\`
 
 Declare the view server-side with \`sw.db.live(name, sw.db.from(...))\` →
-docs({ topic: 'realtime' }).
+docs({ topic: 'live' }).
 
 ## Functions — client.functions.invoke
 
@@ -471,8 +540,8 @@ One supported SDK. We'd rather ship one we maintain than a pile we don't.
 | JavaScript / TypeScript | @somewhere-tech/sdk | npm i @somewhere-tech/sdk | Stable — supported (v${SDK_VERSION}) |
 
 Its shape: createClient → from().select() → { data, error }, plus auth,
-storage, and functions (createClient, functions.invoke, onAuthStateChange,
-realtime channel subscribe) — reach for it first, especially when porting an
+storage, and functions (createClient, functions.invoke, onAuthStateChange)
+ — reach for it first, especially when porting an
 app. → docs({ topic: 'sdk' }). For the command line, → docs({ topic: 'cli' }).
 Every other language talks to the platform through the ordinary HTTP API
 (docs({ topic: 'api-surface' })) or the CLI; no other language SDK is offered.
@@ -816,7 +885,7 @@ docs({ topic: 'preview' }).
 
 Somewhere is not a drop-in Supabase replacement. Migrate the app's data and
 access contract; changing an import does not migrate queries, permissions,
-authentication, files, or realtime behavior.
+authentication, files, or live-update behavior.
 
 ## Declare the data contract
 
@@ -851,7 +920,7 @@ switching traffic. A column named \`user_id\` does not declare its policy.
 See docs({ topic: 'portability' }) for export and import capabilities.
 
 Supabase channels are not the browser live-data contract. Use the supported
-named live-view path described in docs({ topic: 'realtime' }); its scope
+named live-view path described in docs({ topic: 'live' }); its scope
 limits apply. Do not assume every declared table supports subscriptions.
 `,
 
@@ -1087,16 +1156,25 @@ deploy. Managed tables are locked to the file — \`db_migrate\` and
 is refused at query time (\`SCHEMA_LOCKED\`) — edit \`db/schema.ts\` and
 deploy instead.
 
-A managed table's access scope is fixed at the deploy that created it.
-Changing \`scope\` on an existing managed table is refused at deploy today —
-\`409 SCHEMA_DEPLOY_REFUSED\`, the message naming the table and its current
-scope, nothing applied, the previous version kept serving — whether or not
-the table holds rows, and no amount of waiting changes that. The supported
-path is to declare a NEW table name with the scope you want and move the
-rows yourself (an export/import, or a function that copies them). A scope
-declaration is keyed by table name. \`409 SCOPE_CHANGE_BLOCKED_BY_RELEASE\`
-exists only for the pre-existing hand-declared scopes that \`db/schema.ts\`
-takes over on a legacy project while a retained release still queries them.
+An existing managed table can change between \`owner()\`, \`shared()\`, and
+\`serverOnly()\` on a production deploy when the change is scope-only and the
+table is empty. The project must contain no view; the table must have no links
+or triggers; and deploy review must not detect its name in raw SQL.
+The database checks emptiness inside the same transaction that applies the
+change, so a concurrent write makes the whole deploy fail instead of moving or
+reclassifying a row. Preview deploys cannot make this transition.
+
+An eligible change creates a new empty table generation for the new access
+rules. Earlier releases keep addressing their old empty, write-sealed object;
+the new release addresses the new object after activation. Because released
+code is not re-postured, active and retained releases using the old scope do
+not block this fork. If the table has rows or any other eligibility condition
+is not met, the deploy returns \`409 SCHEMA_DEPLOY_REFUSED\` with the specific
+reason and nothing changes; declare a new table name when that reason cannot be
+removed. Existing \`member()\` and policy-composed scopes are not supported by
+this transition. \`409 SCOPE_CHANGE_BLOCKED_BY_RELEASE\` still protects a
+non-forked legacy takeover or restoration that would change the posture of
+retained code.
 
 Everything else is the **SQL database** — you write the SQL. \`db_migrate\`
 applies schema changes (a production target is bookmarked first — a marker
@@ -1145,11 +1223,76 @@ Developer authority is untouched: \`db_query\`, \`db_batch\`,
 \`db_migrate\`, \`db_dump\`, the CLI, and the dashboard keep
 full raw SQL against the same database.
 
-The latch is one-way. There is no tool, flag, or setting that returns a
-project to SQL mode. If functions need raw SQL writes, keep the project in SQL
-mode. A managed project uses structured writes, including
-\`sw.db.server.insert / update / remove / tx\` after application authorization
-for deliberate server-authority writes.
+Leaving managed mode is possible. There is no flag that flips a project back,
+because the transition is deliberate: the owner authorizes it by email FIRST,
+and the release that exports every managed table then completes it.
+
+1. \`POST /v1/projects/:id/managed-exit/request\` — a developer credential for the
+   project OWNER. You can request this with managed tables still present; that
+   is the point. The platform emails that account's current verified address the
+   exact plan: every managed table it would export, and the retained releases
+   the exit would override. An account whose email is unverified, or that is
+   anonymous, temporary or merged away, is refused. 3 requests per project per
+   10 minutes.
+2. \`GET /v1/managed-exit/review?token=…\` — the plan, its digest, the base
+   release, the warning, and which stage it is at. Review-only: opening it
+   approves nothing and changes nothing.
+3. \`POST /v1/projects/:id/managed-exit/approve\` — the owner submits the token.
+   **This records authorization and nothing else.** Your project is exactly as
+   managed after approving as before: no authority moves, no table changes, no
+   rollback boundary moves. The link is single-use and expires 10 minutes after
+   the request.
+4. **Deploy the release that marks every managed table \`exported()\`.** That
+   release consumes the authorization and completes the transition. It must
+   export exactly the approved set — a partial export, an extra table the
+   approval never covered, or a release that adds new managed tables is refused
+   and changes nothing.
+
+The dashboard drives the same calls at \`/dashboard/managed-exit\`.
+
+What the completing deploy does, stated as the warning states it:
+
+- **Your data is preserved.** Existing rows and tables stay as they are.
+- The platform **stops enforcing** declared table access and schema-safe composed
+  writes. SQL migrations, authorization, validation, and rollback compatibility
+  become yours.
+- Developer tools, including developer-authorized \`run_code\`, receive direct SQL
+  authority once the transition completes.
+- **Already-deployed managed handlers do not change.** They keep their baked
+  managed/read-only behavior until you remove the marker-only \`db/schema.ts\` and
+  deploy reviewed SQL source.
+- Managed clients for exported tables become unavailable.
+- Releases older than the completing release are no longer eligible for rollback.
+
+The completing release therefore ships a marker-only declaration — every
+managed table marked, and nothing else in the file:
+
+\`\`\`ts
+import { schema, exported } from 'somewhere/db';
+
+export default schema({
+  readings: exported(),
+  field_notes: exported(),
+  audit_log: exported(),
+});
+\`\`\`
+
+\`exported()\` takes no options, and managed search must be removed too.
+Downloading a backup does **not** substitute for any of this: \`db_dump\` or a
+data export leaves the declaration exactly as it was, and the transition is
+about what the live declaration claims, not about whether you hold a copy.
+
+**Two limits to plan around.** Without an approved exit, \`exported()\` is refused
+while a retained release in the rollback window still queries that table's
+declared scope — an approved exit is what authorizes overriding exactly the
+releases you were shown. And your app code is not migrated for you: the
+\`somewhere:data\` client is generated from the declaration, so browser code
+calling an exported table must change in the SAME release that exports it.
+
+Exiting is a considered migration, not an undo button. If your functions need
+raw SQL writes, keep the project in SQL mode. A managed project uses structured
+writes, including \`sw.db.server.insert / update / remove / tx\` after application
+authorization for deliberate server-authority writes.
 
 ## Managed-schema error codes
 
@@ -1516,20 +1659,98 @@ still bound, never spliced into the SQL.
 
 ### Related rows in server functions
 
-Declare \`relations: { tasks: hasMany('tasks', 'project_id') }\` on the parent
-table and \`references: 'projects'\` on the child's linking column. Then:
+Two directions, both declared in \`db/schema.ts\` and both proven at deploy
+against a real foreign key:
+
+  projects: table({ id: id(), name: text(), archived: boolean({ default: false }) }, {
+    scope: owner(),
+    relations: { tasks: hasMany('tasks', 'project_id') },
+  }),
+  tasks: table({ id: id(), title: text(), done: boolean({ default: false }),
+                 project_id: integer({ references: 'projects' }) }, {
+    scope: owner(),
+    relations: { project: belongsTo('projects', 'project_id') },
+  }),
+
+\`hasMany(childTable, foreignKey)\` goes on the parent: the child's
+\`foreignKey\` column must declare \`references\` to the parent, and the
+parent must have an \`id()\` column. \`belongsTo(parentTable, foreignKey)\`
+is the inverse and goes on the table that holds the key. A relation name
+cannot be a column name on the same table. Then:
 
   const projects = await sw.db.from('projects', { include: ['tasks'], limit: 20 });
-  // Each project in projects.data has a tasks array.
+  // Each project in projects.data has a tasks array (possibly empty).
+  const tasks = await sw.db.from('tasks', { include: ['project'], limit: 20 });
+  // Each task in tasks.data has a flat project row — or null.
   const withOpenTasks = await sw.db.from('projects', { has: { tasks: { done: false } }, limit: 20 });
   // Only projects with at least one accessible matching task.
+  const inActive = await sw.db.from('tasks', { has: { project: { archived: false } } });
+  // Only tasks whose parent the caller can read and that matches.
 
 The platform composes the relationship and separately applies each table's
-scope, including membership. A child the caller cannot access cannot make
-\`has\` match. \`include\` fetches children separately after reading parents;
-it does not promise a single snapshot. There is no caller-authored join
-condition. In a browser use the paginated
-\`data.projects.relations.tasks.list(projectId)\` operation instead.
+scope, including membership: a relation key shapes the relationship and is
+never trusted for access. A \`hasMany\` include nests an array; a
+\`belongsTo\` include nests the single parent row, and a parent the caller
+may not read — or a null key — nests \`null\`: the root row is never dropped
+and no parent column leaks. A related row the caller cannot access cannot
+make \`has\` match. With explicit \`columns\`, include the key column
+(\`project_id\` for \`belongsTo\`, \`id\` for \`hasMany\`) so rows can be
+matched; the call refuses otherwise. \`include\` fetches related rows
+separately after reading the root rows; it does not promise a single
+snapshot. There is no caller-authored join condition, and a name that is not
+declared fails with \`RELATION_NOT_DECLARED\`. In a browser use the
+paginated \`data.projects.relations.tasks.list(projectId)\` operation for
+children and an ordinary \`data.projects.get(task.project_id)\` for a parent.
+
+### Aggregates — sw.db.aggregate
+
+Count, sum, average, minimum and maximum, optionally grouped, composed by the
+platform with the same row permissions an ordinary read gets — so the numbers
+describe exactly the rows the caller may read, never the whole table:
+
+  const totals = await sw.db.aggregate('orders', { count: true, sum: 'amount' });
+  // totals.data = [{ count: 12, sum_amount: 4800 }] — ungrouped is always exactly one row
+  const byStatus = await sw.db.aggregate('orders', {
+    count: true, avg: 'amount', max: 'created_at',
+    groupBy: ['status'],
+    where: { archived: false },
+    having: { count: { gte: 2 } },
+    order: [['count', 'desc']],
+    limit: 20,
+  });
+  // byStatus.data = [{ status: 'paid', count: 9, avg_amount: 410, max_created_at: '…' }, …]
+  // byStatus.count = the number of groups returned
+
+Signature:
+
+  sw.db.aggregate(table, { count?: true, sum?, avg?, min?, max?, groupBy?, where?, has?, having?, order?, limit?, asServer? })
+  sw.db.server.aggregate(table, { …the same options, without asServer })
+
+- \`count: true\` counts rows and takes no column; \`sum\` / \`avg\` /
+  \`min\` / \`max\` each name ONE column. At least one is required.
+- Result keys are composed by the platform, never by the caller: \`count\`,
+  \`sum_<column>\`, \`avg_<column>\`, \`min_<column>\`, \`max_<column>\`.
+  The result is always \`{ data: rows, count }\` — \`data\` is an array of
+  group rows even when ungrouped, and the envelope's \`count\` is the number
+  of rows RETURNED (groups); the row count you asked for lives inside each
+  row under \`count\`.
+- \`sum\` and \`avg\` need a column declared \`integer\` or \`number\` in
+  \`db/schema.ts\` — another type is refused with \`TYPE_MISMATCH\`, and a
+  table outside the schema file cannot be summed or averaged
+  (\`TABLE_NOT_MANAGED\`). \`json\` and \`blob\` columns cannot be
+  aggregated or grouped.
+- \`groupBy\` takes up to 4 declared columns; a grouped column cannot share
+  a name with a result key.
+- \`having\` filters result keys, not columns, with one of \`eq\`, \`ne\`,
+  \`lt\`, \`lte\`, \`gt\`, \`gte\` per condition (\`{ count: { gte: 2 } }\`).
+- \`order\` may name only a \`groupBy\` column or a result key. \`where\`
+  and \`has\` take the same shapes as \`from\`, so a relation filter
+  composes the related table's own scope into the summary.
+- Row permissions compose as for \`from\`: an \`owner()\` table needs a
+  signed-in request (\`AUTH_REQUIRED\` otherwise); \`{ asServer: true }\` or
+  \`sw.db.server.aggregate\` reads across users after you authorize the
+  caller. The generated browser client offers \`aggregate\` on every table
+  with a \`read\` grant (\`docs({ topic: 'declared-data' })\`).
 
 ### Named live views — sw.db.live(name, read)
 
@@ -1629,10 +1850,10 @@ cross-user overwrite.
 
 ### Cross-user reads — explicit server authority
 
-\`sw.db.from(table, { asServer: true })\` and \`sw.db.count(table,
-{ asServer: true })\` are the sanctioned way for trusted server code to read
-across users on a user-owned table — admin screens, aggregates, background
-jobs. Server mode never impersonates a request user. It deliberately bypasses
+\`sw.db.from\`, \`sw.db.count\` and \`sw.db.aggregate\` with
+\`{ asServer: true }\` — or \`sw.db.server.from / count / aggregate\` —
+are the sanctioned way for trusted server code to read across users on a
+user-owned table — admin screens, aggregates, background jobs. Server mode never impersonates a request user. It deliberately bypasses
 per-row ownership but does not bypass the intent requirement (an undeclared
 table still refuses). It exists only on the read verbs and is not a browser
 operation. Without it, an owner-table read with no verified
@@ -1892,10 +2113,21 @@ the built-in that matches the next moment:
   \`sw.queue.push(...)\` or \`queue_send(...)\`.
 
 Keep the database commit separate from these downstream calls and make the
-downstream handler idempotent. Related topics: \`realtime\`, \`analytics\`,
+downstream handler idempotent. Related topics: \`live\`, \`analytics\`,
 \`search\`, \`sw.jobs\`, and \`sw.queue\`.
 
 ## Performance and query duration
+Composed calls — \`sw.db.from\` / \`count\` / \`aggregate\` / \`insert\` /
+\`update\` / \`remove\` / \`tx\` — run on the project's own database
+connection and are the ordinary path. \`sw.db.server.query\` and
+\`sw.db.server.batch\` reach the database over a separate read-only route and
+cost meaningfully more per call, so reach for a composed call first and keep
+raw SQL for what it cannot express. Independent raw reads belong in ONE
+\`sw.db.server.batch\` rather than several awaited \`sw.db.server.query\`
+calls; dependent ones stay sequential. Independent COMPOSED reads started
+without an await between them are already sent as one round trip.
+\`docs({ topic: 'speed' })\` has the whole picture.
+
 Per-query latency is not fixed. Total time can include first-touch
 activation, placement/transport, database scheduling, elapsed retry backoff, and SQL
 engine time. Slow-query logs separate \`total_ms\`, provider-reported
@@ -1943,6 +2175,445 @@ Equivalent REST surface (developer key only):
   PUT    /v1/db/webhook                 { project_id, url, events? }
   GET    /v1/db/webhook?project_id=…
   DELETE /v1/db/webhook?project_id=…
+`,
+
+  'speed': `# Speed
+
+Two things decide how fast a page or an API call feels: how much of the answer
+is already close to the visitor, and how many times your code crosses the
+network to the database. The platform owns the first. The second is shaped by
+how a handler is written, and this page is the contract for both.
+
+There is no single latency figure to design against. How far apart your
+visitor, the function answering them and the database holding the data are is
+usually the term that moves most — but how much work a given query asks of the
+database can outweigh it, and both differ by app and by region. Measure your
+own app (last section) rather than planning against a number from anywhere
+else.
+
+## Pages and assets
+
+Deployed source is compiled for you. The browser bundle is minified, ships no
+source maps, and declares its chunks up front so they load alongside the page
+instead of after it. Compiled assets are content-addressed: a browser and the
+edge can both hold one indefinitely, and a deploy produces new addresses rather
+than changing old ones.
+
+On your project host and on a custom domain, an ELIGIBLE public request — a
+\`GET\` or \`HEAD\` for a page, a compiled asset or a public file, answered from
+a route this location has already resolved recently — runs the routing check
+behind the response instead of in front of it. The trade is bounded and
+deliberate: for up to 60 seconds after a deploy, a location that missed the
+update can still answer with the previous release. Past that window, and
+whenever this location has no recent route to go on, the request is exact.
+
+Not every request takes that path, and none of them are slower for it: anything
+that is not a plain \`GET\`/\`HEAD\`, a preview or development address, a
+group or platform-overlay surface, and the platform's own addresses under
+\`somewhere.tech\` all resolve the route before answering. Those confirm the
+routing decision first, which is a different guarantee from being instantly
+consistent everywhere — a deploy still propagates.
+
+Separately from routing: eligible static pages and single-page app routes can
+reuse the release's stored HTML. The shared copy contains only the base page.
+User-specific prefetched data is added afterwards for each request, using that
+request's identity and the current release's function. That personalized
+response is private and must not be cached. Preview, development, grouped and
+overlay views keep their existing serving path.
+
+## Choosing whether to use shared copies
+
+Project Settings → Advanced → Shared caching controls the platform's shared
+copies of pages, static assets and eligible public-data responses. You can
+also set \`edge_cache_disabled: true\` through \`PATCH /v1/projects/:id\`;
+\`false\` restores the default. This uses the existing project editor
+permission. The saved boolean is returned by the project API.
+
+Saving Off starts clearing existing copies; it is not an instant global
+flush. Copies can remain for up to about an hour if clearing fails. Browser
+copies already downloaded are separate and are not removed by this setting.
+Authenticated page data still uses the requesting visitor's identity; this
+switch does not grant access to private data.
+
+## Deploy performance hints
+
+A deploy can return a small number of warnings about absolute stylesheet
+references, large images referenced by source, or repeated awaited raw SQL
+calls. Each names the source location and the bytes or calls observed, with
+an action to consider. These are warnings, never deploy refusals or measured
+latency claims. The scan is bounded and does not inspect every possible
+execution path; no warning is not proof that a page is fast.
+
+## There is no server rendering
+
+The platform serves static files and functions. It does not render React (or
+any framework) on the server, and it does not pre-render your pages at deploy
+time. The shape that performs well here is a page that paints from its own
+markup and assets, and then fetches what it needs. A first paint that waits on
+a database read is a first paint that waits on a network round trip — put the
+shell up first, then fill it.
+
+One thing does arrive with the document. When a SIGNED-IN visitor requests a
+page path and your project has a function at the matching \`/api/<path>\`, the
+platform calls that function with the same request identity and inlines its
+JSON into the page as \`window.__PREFETCH\` (with \`window.__PREFETCH_PATH\`
+naming the path it came from), so your app can render from it instead of
+fetching on mount. It is strictly additive and deliberately timid: signed-in
+\`GET\` requests only, never the root path, never \`/api/*\` itself, only a
+200 JSON response under 100 KB. Response headers must arrive within a second;
+reading the body is not yet covered by that deadline. Anything else and the
+page is served exactly as it would have been, so treat the global as an
+optimization to check for, never as a value your code requires.
+
+## What a database call costs
+
+Your function runs close to the visitor, and reaching the database is a
+network round trip. Writes reach the database primary; eligible reads may be
+served closer to the reader. Either way, sequential database calls can still
+incur separate round trips — and a round trip carries a BATCH of statements,
+not one statement, so statements your handler sends together share one while
+statements it awaits one after another each pay their own.
+
+For an ordinary indexed read of a modest number of rows, the crossing is
+usually the larger share of the time and the distance to the database is the
+term that moves it most. That is not universal — a wide scan, a big sort, an
+unindexed filter or an aggregate over a large table can spend more time in the
+query engine than on the wire, and no amount of batching helps with that. The
+two problems look identical from the outside and have opposite fixes, so
+measure (last section) before deciding which one you have.
+
+The habit that follows: count the ROUND TRIPS a handler makes, then check
+whether any single statement is doing too much work.
+
+Composed calls — \`sw.db.from\` / \`count\` / \`aggregate\` / \`insert\` /
+\`update\` / \`remove\` / \`tx\` — run on the project's own database connection.
+That is the ordinary path and the fast one. Start there.
+
+## Reads issued together travel together
+
+Reads a handler starts without awaiting between them are sent as ONE round
+trip. Nothing to enable, no different API:
+
+\`\`\`ts
+const [posts, tags] = await Promise.all([
+  sw.db.from('posts', { where: { published: true }, order: [['created_at', 'desc']], limit: 20 }),
+  sw.db.from('tags'),
+]);
+\`\`\`
+
+Reads you await one after another cannot travel together — the first has to
+come back before the second exists. Two awaits in a row are two round trips.
+That is worth noticing before it surprises you, not worth contorting code to
+avoid.
+
+This applies to READS. A write keeps its own trip and is never folded in with
+reads, so that an unrelated read's failure can never roll your write back. When
+several writes must succeed or fail together, say so with \`sw.db.tx\`.
+
+## Dependent reads: bound the number of round trips
+
+The expensive shape is a read per row — fetch 50 tasks, then fetch each task's
+project. Declaring the relationship replaces that with a fixed cost:
+
+\`\`\`ts
+// a declared belongsTo relation
+const tasks = await sw.db.from('tasks', { include: ['project'], limit: 50 });
+\`\`\`
+
+\`include\` reads the root rows, then reads the related rows in bounded
+batches rather than one query per row. The number of database round trips
+grows with the relations you include and with the number of key batches, not
+with the rows themselves. It is the fix for the read-per-row loop, not a way to
+reach one round trip, and it is deliberately not a single snapshot.
+
+\`sw.db.aggregate\` genuinely is one statement, and it is the right answer
+whenever you were about to read rows only to count, total or group them:
+
+\`\`\`ts
+const byStatus = await sw.db.aggregate('orders', { count: true, groupBy: ['status'] });
+\`\`\`
+
+\`include\`, \`has\` and \`sw.db.aggregate\` all carry the caller's row
+permissions into the question the platform composes; \`docs({ topic: 'sw.db' })\`
+has their full contracts. When a read genuinely cannot be expressed this way it
+stays sequential. That is a correct program, just a slower one.
+
+## Raw server SQL costs more per call
+
+On a project with a declared schema, ordinary \`sw.db.query\` and
+\`sw.db.batch\` are refused. The escape hatch is \`sw.db.server.query\` /
+\`sw.db.server.batch\`, which reach the database over a separate read-only
+route rather than the project's own connection, and cost meaningfully more per
+call than a composed operation. They also do not apply declared row
+permissions — authorize the caller yourself before calling them.
+
+So, in order:
+
+1. Try to express it as a composed call. An \`include\`, a \`has\` filter or an
+   \`aggregate\` usually covers what the raw read was for, on the faster route
+   and with permissions already applied.
+2. If you do need raw reads and they are independent of each other, send them
+   in ONE call rather than awaiting several:
+
+\`\`\`ts
+// Server authority reads ACROSS users. Authorize the caller first — the
+// platform applies no row permissions to these statements.
+const actor = await sw.auth.fromRequest(req);
+if (!actor || actor.role !== 'admin') return new Response('Forbidden', { status: 403 });
+
+const [recent, totals] = await sw.db.server.batch([
+  { sql: 'SELECT id, email FROM users WHERE created_at > ?', params: [since] },
+  { sql: 'SELECT status, COUNT(*) AS n FROM orders GROUP BY status' },
+]);
+// One result per statement, in order; rows are on .data
+// recent.data -> [{ id, email }, ...]   totals.data -> [{ status, n }, ...]
+\`\`\`
+
+Dependent raw reads stay sequential, for the same reason dependent composed
+reads do.
+
+## Writes, permissions, and freshness
+
+Three different guarantees get confused with each other. Keeping them apart is
+most of what you need:
+
+**Access checks remain enforced.** Session revocation checks read current
+authority. Structured queries apply declared row permissions; policy shapes
+that depend on mutable membership or parent authority retain their
+primary-read requirements. Identity-bearing requests bypass the shared
+public-result cache. Ordinary row reads still follow the consistency rules
+below.
+
+**Declared constraints and the conditions in an atomic write are checked when
+it commits.** Express balances, inventory and limits with those operations:
+reading a value and later writing a replacement does not prevent concurrent
+lost updates. The response to a write describes what committed.
+
+**Reading your own write is a carried position, not magic.** Your database may
+answer a read from a copy kept nearer the reader, which can be slightly behind.
+To make that safe, a response from your function publishes the position it
+reached — as an \`x-sw-d1-bookmark\` response header, and for browsers as a
+short-lived host-only cookie — and the next request presenting that position is
+answered at or after it. So a browser that just wrote through your app sees its
+own write on its next call. The conditions are worth knowing, because they are
+where the guarantee ends: the carried position is short-lived (about a minute),
+it belongs to that one client, and a DIFFERENT client, a later visit, or a
+request that never carried it can be answered from a copy that is slightly
+behind. This is another reason a read-then-write pair is the wrong shape for a
+balance or a seat count: put the condition in the write.
+
+**Public data is the one deliberate trade.** Anonymous reads of data you
+explicitly declared public may be answered from a shared copy kept near
+readers; a committed declared write drops that copy, and a copy that was missed
+expires on its own. \`docs({ topic: 'declared-data' })\` carries that contract in
+full — read it before building on public data that can be withdrawn.
+
+## Files
+
+A public file is served from a nearby copy once it has been fetched there. A
+file reached through a signed link is cacheable only by the browser holding
+that link, for as long as the link is valid, and is fetched from storage
+otherwise.
+
+## Measure your own app
+
+A function's clock advances across awaited work, so \`Date.now()\` around an
+awaited database call measures that call's round trip honestly. The same
+measurement around work that never awaits anything reads 0 — that is a property
+of the runtime clock, not a sign the work was free.
+
+\`\`\`ts
+const started = Date.now();
+const posts = await sw.db.from('posts', { limit: 20 });
+sw.logs.info('posts read', { ms: Date.now() - started, rows: posts.data.length });
+\`\`\`
+
+Read the result back with \`project_logs\`, which also reports each request's
+own duration. Compare warm requests with warm requests: the first request into
+a freshly deployed release does one-time work the next one does not, so it
+belongs to its own cohort and is not the number to plan against.
+
+Related: \`sw.db\`, \`declared-data\`, \`database-engine\`, \`deploy\`,
+\`sw.logs\`.
+`,
+
+  'postgres': `# PostgreSQL
+
+Attach ONE external PostgreSQL database to a project and query it from your
+deployed functions through the provider's official driver. This is
+pass-through, not a managed database: you own the provider account, you pay the
+provider directly, and the platform's job is to hold the connection securely
+and hand it to your functions.
+
+The provider is Neon. You connect it with a Neon API key you create in your own
+Neon account.
+
+## What this is not
+
+- **Not \`sw.db\`.** There is no \`db/schema.ts\`, no declared tables, and NO
+  automatic row permissions. \`sw.db.from\` scopes a query to the verified
+  signed-in user; this does not, and cannot — the platform never composed the
+  SQL, so it has nothing to scope.
+- **Not managed by us.** Plan, region, billing, backups, upgrades, extensions
+  and quotas are between you and Neon. Nothing about the database is provisioned
+  or paid for on your behalf.
+- **Not a migration path.** Moving existing data in, importing from another
+  provider, and copying a managed database across are not part of this.
+
+## Authorization is yours, and it is the whole risk
+
+Read this section before you write the first query. On a declared table the
+platform proves the caller may see the row. Here it cannot: your SQL runs
+exactly as written, with whatever the role in your connection string is allowed
+to do. Two things belong in every handler that touches the database.
+
+**Verify the user on the server.** The request tells you nothing trustworthy
+about who is asking. A user id in a body, a query parameter or local storage is
+an assertion by the browser, not an identity.
+
+**Pass values as parameters, never as text.** Placeholders are \`$1\`, \`$2\`
+and so on, with the values sent alongside the statement — that is what makes a
+value a value rather than more SQL.
+
+\`\`\`ts
+export default async function (req, sw) {
+  // WHO is asking — decided by the server, from the session.
+  const actor = await sw.auth.fromRequest(req);
+  if (!actor) return new Response('Sign in', { status: 401 });
+
+  const { searchParams } = new URL(req.url);
+  const status = searchParams.get('status') ?? 'open';
+
+  // WHAT they may see — your WHERE clause, because nothing adds one for you.
+  // Both values travel as parameters; neither is concatenated into the SQL.
+  const tickets = await sw.postgres.query(
+    'SELECT id, title, status FROM tickets WHERE owner_id = $1 AND status = $2 ORDER BY created_at DESC LIMIT 50',
+    [actor.id, status],
+  );
+
+  // tickets IS the array of rows. There is no result envelope to unwrap.
+  return Response.json({ tickets });
+}
+\`\`\`
+
+\`sw.postgres\` IS the driver's callable — exactly what
+\`neon(connectionString)\` returns from \`@neondatabase/serverless\`, already
+built against your attached database. Nothing wraps it, so every shape is the
+driver's own:
+
+\`\`\`ts
+// Tagged template — values are still parameters, not string splicing.
+const open = await sw.postgres\`SELECT id FROM tickets WHERE owner_id = \${actor.id}\`;
+
+// Explicit text + parameters, as above.
+const rows = await sw.postgres.query('SELECT id FROM tickets WHERE owner_id = $1', [actor.id]);
+
+// Several statements in one transaction.
+const [a, b] = await sw.postgres.transaction([
+  sw.postgres\`UPDATE accounts SET balance = balance - 10 WHERE id = \${from}\`,
+  sw.postgres\`UPDATE accounts SET balance = balance + 10 WHERE id = \${to}\`,
+]);
+\`\`\`
+
+A query resolves to an ARRAY OF ROWS. There is no \`{ data, error }\` envelope, no
+\`.data\` and no \`.rows\` to unwrap — those belong to \`sw.db\` and to other
+drivers, not to this one. Errors are the driver's errors and they throw. Result
+typing, pooling and connection behaviour are the driver's too, documented by the
+provider, and deliberately not reinterpreted here: a wrapper would drift from
+the driver on its next release and hide failures you need to see.
+
+Nothing else from \`sw.db\` applies either — no automatic owner column, no
+declared relations, no aggregate builder, no live views.
+
+If no database is attached, or the release was deployed before one was attached,
+the binding throws \`POSTGRES_NOT_ATTACHED\` and the fix is the same both times:
+attach, then deploy again.
+
+## Connecting a database
+
+Store your Neon API key once, then either bind a database you already have or
+have one created in your account.
+
+\`\`\`bash
+# 1. Store the key. It is prompted for or read from stdin, never an argument.
+#    Pass --neon-project when your key is scoped to ONE Neon project: a
+#    project-scoped key cannot list projects, and without the id the check
+#    that runs is a listing.
+somewhere postgres connect --project my-app --neon-project <neon-project-id>
+
+# 2a. Bind a database you already have.
+somewhere postgres attach <neon-project-id> --project my-app
+#     --database / --role are required when the branch has more than one of
+#     either; --branch selects a branch other than Neon's default.
+
+# 2b. Or have one created in YOUR Neon account, billed by Neon to you.
+somewhere postgres create --project my-app --region aws-us-east-2
+
+somewhere postgres status --project my-app
+\`\`\`
+
+The same operations are \`POST /v1/postgres/connect\`,
+\`POST /v1/postgres/attach\`, \`POST /v1/postgres/create\`,
+\`GET /v1/postgres/status\` and \`POST /v1/postgres/disconnect\`, callable
+with the \`api\` tool. They take a developer credential, and every change
+requires project OWNER; reading status needs editor. They never run SQL, never
+return either credential, and never delete a database.
+
+Creating is explicit and is NEVER retried automatically. Neon's create takes no
+idempotency key, so a blind retry can charge you twice and strand a project you
+did not ask for. If an attempt's outcome cannot be read you get
+\`POSTGRES_CREATE_UNCERTAIN\` and the attachment is parked in an uncertain
+state: check your Neon account, then attach the database directly or disconnect
+to clear it. The platform will not guess on your behalf.
+
+If a create is interrupted — the request died partway — the attachment is left
+saying so rather than quietly reset, and nothing expires it: an automatic
+timeout would be permission to create a second database whose first sibling may
+already exist and be billing. \`POSTGRES_CREATE_IN_PROGRESS\` names the
+database's name and when the create started, and the provider project id if one
+was recorded, so you have something to search for. Three ways out, all yours:
+wait if it is still running, attach the database directly if you find it, or
+disconnect to clear the state once you have reconciled.
+
+Disconnecting an unresolved create is the one case where disconnect hands
+something back: it returns the provider project id once, with a note that a
+database may exist at your provider and will keep billing until you attach or
+delete it. After that the record here no longer names it, so it is worth
+keeping.
+
+Other codes worth recognising: \`POSTGRES_NOT_CONNECTED\` (no key stored yet),
+\`POSTGRES_PROVIDER_UNAUTHORIZED\` (Neon rejected the key),
+\`POSTGRES_PROVIDER_UNREACHABLE\` (Neon could not be reached — nothing was
+stored), and the ambiguity codes for branch, database and role, which mean the
+branch has more than one and you must name which.
+
+The API key can create and DELETE databases in your account, so it is stored
+for the control plane only and is never readable by anything on the deploy
+path. The connection string is stored separately and is the only one of the two
+that reaches your deployed functions. Neither is ever returned by any route.
+
+## Changing or removing the connection
+
+- **A connection change takes effect on your next deploy.** The connection is
+  bound into the deployed release, so an already-deployed release keeps the
+  credential it was built with until you deploy again.
+- **Disconnecting unlinks; it NEVER deletes.** The platform does not delete a
+  database at your provider under any circumstance — not one you attached, and
+  not one it created for you. Disconnect removes the attachment here and
+  nothing else; your Neon project, its databases and all their data stay
+  exactly as they are, and deleting them is something only you do, in your own
+  Neon account. Disconnect also keeps your stored API key unless you pass
+  \`--forget-key\`.
+- **Attaching does not rotate your database password.** If you need the old
+  credential to stop working, rotate it in Neon.
+
+## Previews
+
+Preview releases do not get the connection, and a preview must never be pointed
+at a production database. Treat preview work against attached PostgreSQL as
+unsupported for now.
+
+Related: \`sw.db\`, \`sw.auth\`, \`security-model\`, \`sql-compatibility\`.
 `,
 
   'sw.fetch': `# sw.fetch — outbound HTTP fetch from a function
@@ -2283,7 +2954,7 @@ export default async function(req, sw) {
 
 ## Outbound WebSocket client
 A function can open an OUTBOUND WebSocket to another server — a
-server-to-server realtime bridge — with a fetch upgrade:
+server-to-server bridge — with a fetch upgrade:
 
 export default async function(req, sw) {
   const resp = await fetch('https://example.com/stream', {
@@ -2298,8 +2969,8 @@ export default async function(req, sw) {
 
 This is for connecting OUT to someone else's socket. To push updates to your
 OWN app's browser clients, declare a live view over the data they are
-watching — realtime channels do not accept app-user sessions. See
-docs({ topic: 'realtime' }).
+watching — the channel transport does not accept app-user sessions. See
+docs({ topic: 'live' }).
 
 ## Secrets / env vars
 Set via dashboard Settings or env MCP tool.
@@ -2405,6 +3076,16 @@ const slice = await sw.fs.read('/logs/import-run.txt', { lines: [50, 75] })
 // or { recursive: true, depth: 2 } to cap the walk.
 const all = await sw.fs.list('/uploads/', { recursive: true })
 // all = { path: '/uploads/', type: 'directory', entries: [...] }
+
+## sw.fs.server — explicit project-wide file access
+
+In a deployed handler, use \`sw.fs.server.read/write/list\` and the other
+ordinary file operations when the application intentionally needs project-wide
+access. Authorize the caller in your application before choosing this view;
+it does not apply the request user's ownership filter. It uses the same
+signatures and result shapes as \`sw.fs\` and does not expose the cross-file
+scanners below. Existing \`sw.fs\` behavior is unchanged. Existing apps receive
+this additional view on their next deploy.
 
 ## sw.fs.dev — project-wide file view (run_code only)
 // sw.fs.dev.* operates with PROJECT authority over every file in the project,
@@ -2579,6 +3260,18 @@ const { url, expires_at } = await sw.fs.signedUrl('/uploads/invoice-42.pdf', {
 // Send the url in an email body, embed it in <img src=...>, etc.
 // The URL stops working at expires_at; rotating JWT_SECRET invalidates
 // every outstanding signed URL (bulk revocation lever).
+
+For a smaller preview of a raster image, append \`?w=384\` to the signed URL.
+The parameter is \`w\`, not \`width\`. Supported widths are 192, 384, 768 and 1536 pixels. Variants use WebP,
+preserve aspect ratio and never upscale; the URL without \`w\` still returns
+the original. Invalid \`w\` values and recognized unsupported image parameters
+such as \`width\`, \`height\`, \`format\`, \`quality\` and \`fit\` return 400.
+Other query parameters, including tracking tags and unrecognized names, are ignored.
+Byte ranges work on originals; omit the \`Range\` header when requesting a variant.
+An unsupported image type or failed transform returns the guarded original
+with \`X-Somewhere-Image-Variant: original\`, rather than breaking the preview.
+Signed downloads still verify the capability and current file revision before
+using cached bytes. Cached bytes do not bypass expiry or permit another file.
 
 ## sw.fs.public_url(path, { makePublic? })
 // Returns a file's permanent, unauthenticated public URL. Asking for the
@@ -3605,7 +4298,7 @@ automatically.
 
 The browser constructor needs no bearer or developer key. Do not ship an
 \`smt_\` key or invent a placeholder browser credential. Cookie sign-in does
-not credential the SDK's direct \`from()\`, storage, or realtime calls.
+not credential the SDK's direct \`from()\`, storage, or channel calls.
 Use the generated \`somewhere:data\` client for declared browser database
 operations. File access and business logic go through same-origin functions.
 
@@ -4301,6 +4994,13 @@ Or write the PDF to file storage and return its URL:
 SEE it, INSPECT it, and DRIVE it — one tool for the whole loop of "what
 does my app look like, is it healthy, and does it actually work?"
 
+The MCP \`browser\` tool selects the appropriate REST route. For direct HTTP,
+use \`POST /v1/browser/test\` for page inspection and actions, and
+\`POST /v1/render/screenshot\` for raw \`html\` (or \`/v1/render/pdf\` for PDF).
+The page-test route does not render HTML snippets. Multi-viewport flows belong
+to \`somewhere verify --flow\` or MCP \`site_verify\`; a page-test request uses
+one \`viewport\`, not \`viewports\`.
+
 For the complete verification loop, run \`somewhere verify --url <live-or-local-url> --flow flow.json\` or MCP \`site_verify\`. The exact flow object is \`{ "actions": [{ "fill": "#name", "value": "Potluck" }, { "click": "#save" }, { "expect": { "selector": "#status", "text": "Saved" } }], "expect_requests": [{ "path": "/api/private", "status": 401 }], "visible_only": true, "viewports": ["desktop", "mobile"] }\`; omit it for a page load, health report, and both screenshots. Every viewport gets a fresh browser that closes inside the call, including when a step fails.
 
 - **Eyes** — a screenshot of the page.
@@ -4309,8 +5009,11 @@ For the complete verification loop, run \`somewhere verify --url <live-or-local-
 - **Hands** — click / fill / assert your way through a real flow.
 
 \`run_code\` proves a function's backend; \`browser\` proves the rendered
-UI. The report is SIGNALS-FIRST: signals come before the screenshot, and
-\`passed\` reflects step outcomes only — ALWAYS read failed_requests too.
+UI. The report includes action results, page errors, failed requests, and
+screenshots. Read \`data.passed\` in the REST response, not just HTTP status
+or the outer \`ok\` field: a completed check can report a failing app or a
+requested capture that could not be produced. Read the step and screenshot
+errors for the cause.
 
 The principle: **act by selector, verify by signals, screenshot small +
 last.** You wrote the DOM, so target elements directly — don't guess at
@@ -4336,7 +5039,8 @@ itself, no follow-up probing required:
   //     testid_map: { submit: '[data-testid="submit"]', ... }, final_url, passed }
 
 For a quick screenshot of your app, this IS the call — a url or
-project_id with no steps.
+project_id with no steps. An explicit \`include\` list selects the report
+sections instead of the default DOM map; include \`"dom"\` to retain it.
 
 ## Capture any page, or render raw HTML
 
@@ -4353,10 +5057,13 @@ Use \`browser\` to capture a public page or render raw HTML:
   browser({ html: '<div>…</div>', project_id: 'my-app', storage: '/og/card.png' })
   // → { storage_path: '/og/card.png', size_bytes }
 
+The MCP tool routes \`html\` to the renderer; direct HTTP callers use
+\`POST /v1/render/screenshot\` with the same HTML fields, not the page-test route.
 \`html\` mode skips navigation/steps/DOM-map — it just returns the picture.
-\`width\` / \`height\` / \`wait_for\` tune it. When you pass \`project_id\`, a
-\`url\` is scoped to that project's origin; omit \`project_id\` to hit an
-arbitrary url. (PDFs have no browser equivalent — use \`render_pdf\`.)
+\`width\` / \`height\` / \`wait_for\` tune it. With \`project_id\`, the
+initial \`url\` must belong to that project. Signed-in accounts may follow
+a flow to another public site; temporary accounts remain within their own
+project. To start at another public site, omit \`project_id\`.
 
 ## Drive a flow (add actions)
 
@@ -4378,8 +5085,10 @@ under that key:
 
 \`wait\` is a CSS selector or non-negative milliseconds. \`expect\` requires
 \`selector\` plus at least one of \`text\`, \`value\`, \`visible\`, or \`count\`. Actions
-stop on the first failure. Expanded \`steps\` remain accepted for existing
-callers, but new flows use \`actions\`.
+stop on the first failure by default; \`continue_on_failure: true\` runs the
+remaining actions too. Expanded \`steps\` remain accepted for existing
+callers, but new flows use \`actions\`. A screenshot action needs a label,
+for example \`{ "screenshot": "after-save" }\`.
 
 ## Logged-in flows
 
@@ -4393,10 +5102,14 @@ navigation, so authed pages work. Requires a project.
 \`{ console_errors, page_errors, failed_requests, steps:[{step, ok,
 error?, duration_ms}], screenshots:[{label, fs_path}], final_url, passed }\`
 
-\`passed\` reflects step outcomes only — ALWAYS read failed_requests too:
-a backend 500 shows there even when every step visually "passed". A
-failed step aborts the run but the state at failure is still returned;
-pass \`continue_on_failure: true\` to run them all.
+\`passed\` requires successful steps and request expectations, no page
+errors, and no unexpected failed requests. It can be false even when every
+step succeeded. Console messages are additional diagnostic evidence; inspect
+them too. A failing run attempts to return \`rendered_text\` and a screenshot
+labelled \`failure\`; unavailable evidence is reported without hiding the
+original failure. Explicit \`capture: false\` or \`screenshot: false\` skips
+the automatic failure screenshot. With \`continue_on_failure\`, final evidence shows
+the state after the remaining actions, not necessarily the first failure.
 
 ## Screenshots — small by default
 
@@ -4409,12 +5122,18 @@ Override per run:
 Fields: width (default 800, never upscaled past the viewport), format
 ('jpeg' default | 'png'), quality (1–100, jpeg only, default 70). The
 override applies to the no-steps page shot and every screenshot step.
+On an actions run, \`capture\` or \`screenshot\` also requests a final capture.
+Without a project, the capture is returned inline; \`store: true\` can provide
+a temporary screenshot link.
 
 ## Limits
-- 30 actions, ~60s total budget, one run at a time per project.
-- A screenshot needs a project to store the image — pass project_id, or
-  a *.somewhere.site url that resolves to a project you own.
-- Look at / test your OWN projects only.
+- At most 30 actions and a default 60-second action budget.
+- Account run, duration, and concurrency limits apply. A refusal supplies the
+  limit and retry information; it is not a failed app assertion.
+- Project-backed runs require access to that project. Screenshots stored in
+  project files also use its file allowance and write limits.
+- Temporary accounts may test their own project and cannot retain a browser
+  session. Signed-in accounts may inspect other public websites.
 `,
 
   'github': `# GitHub push-to-deploy
@@ -5023,7 +5742,7 @@ are passed straight through to the media backend.
   // 1. Backend mints a session for each call
   const session = await calls_new_session({ project_id })
   // Hand session.session_id to BOTH peers through your own endpoints
-  // (a polled/live-view read of a sessions row); realtime channels are
+  // (a polled/live-view read of a sessions row); the channel transport is
   // not reachable from a browser session.
 
   // 2. Each browser:
@@ -5047,11 +5766,11 @@ are passed straight through to the media backend.
 The wire protocol mirrors a standard WebRTC + SFU exchange — any client
 that speaks the offer/answer SDP dance works.
 
-## When to use calls vs realtime
+## When to use calls vs live updates
 
-- realtime — database-driven live updates a browser can subscribe to
-  (declared live views); channels themselves are developer-authority only,
-  so signalling has to travel through your own endpoints
+- live     — database-driven live updates a browser can subscribe to
+  (declared live views); the channel transport itself is developer-authority
+  only, so signalling has to travel through your own endpoints
 - calls   — actual audio/video bytes (1:1 calls, group rooms, broadcasts)
 
 ## What NOT to do
@@ -7364,11 +8083,11 @@ Merge their changes into your local copy, then retry with
 
 Every successful \`project_deploy\` / \`project_patch\` /
 \`project_restore_version\` publishes a message on the
-\`system:project\` realtime channel for that project. Subscribe with a
-developer key to be notified the instant another agent ships — there is no
-in-function subscribe (\`sw.realtime.*\` throws \`REALTIME_UNAVAILABLE\`):
+\`system:project\` system channel for that project. Subscribe with a
+developer key to be notified the instant another agent ships. This is
+developer tooling, not an in-function capability:
 
-  realtime_subscribe_project({ project_id: "my-app" })
+  events_subscribe_project({ project_id: "my-app" })
   // → { channel: "system:project", websocket_url, event_types: [...] }
   // open websocket_url; each frame is the envelope below
 
@@ -7602,29 +8321,23 @@ Domains renew annually at the price shown when you bought them. Renewal is handl
 Connecting a domain you already own (from any registrar) never changes its ownership — it stays in your account at your registrar; we only serve traffic for it.
 `,
 
-  'realtime': `# Realtime — live updates driven by database writes
+  'live': `# Live updates — a browser subscribing to a declared database view
 
-Live updates are driven by the database, not by a channel API you call.
-Your function writes a row; the platform publishes the change; a browser
-that subscribed to a declared live view re-reads through your own
-function. That is the whole supported shape today.
+Live updates are driven by declared database reads. A successful matching
+structured \`sw.db\` write sends an invalidation for each affected live view; the
+browser then re-reads through the function that declared the view.
 
-## Not available inside a deployed function
+Application state and events belong in the database. There is no caller-named
+channel API: nothing publishes or broadcasts on a channel you pick, and nothing
+subscribes to one.
 
-\`sw.realtime.publish\`, \`sw.realtime.subscribe\`, \`sw.realtime.channels\`,
-\`sw.realtime.broadcast\`, and \`sw.realtime.meta\` all throw
-\`REALTIME_UNAVAILABLE\` (400). Standalone customer channels — chat rooms,
-presence, per-user notification channels driven from your own handler code —
-are deferred. There is no in-function pub/sub. If you need it, file it with
-\`feedback({ ... })\` so the demand is counted.
+## Browser live views
 
-## The browser path that works — a declared live view
-
-\`sw.db.live(name, sw.db.from(...))\` is the live path a signed-in browser
-can subscribe to. The function returns the first rows plus an opaque
-subscription URL; the browser listens for invalidation and re-calls your
-function for fresh rows. No SQL, table name, predicate, owner, or channel
-is ever sent from the browser.
+\`sw.db.live(name, sw.db.from(...))\` is the live path a signed-in browser can
+subscribe to. The function returns the first rows plus an opaque subscription
+URL. The signed channel carries invalidation only, and the browser re-calls
+your function for fresh rows. No row, SQL, table name, predicate, owner, or
+caller-chosen channel travels on that wire.
 
   // api/open-notes.ts — the declaration and the SELECT stay server-side
   export default async function (_req, sw) {
@@ -7648,104 +8361,22 @@ Declaration rules (bounded \`limit\`, required \`order\`, owner/shared tables
 only), the invalidation contract, and release/rollback behavior are in
 \`docs({ topic: 'sw.db' })\` under "Named live views".
 
-## Database-change events — db:<table>
+## Platform system events
 
-Every successful \`sw.db\` write also publishes on the channel
-\`db:<table>\` (table name lowercased), event \`insert\` / \`update\` /
-\`delete\`, payload:
+Two reserved, signed channels carry platform lifecycle events to developer
+tooling. They are subscribe-only, developer-authority only, and carry no
+application data — an app-user or visitor session is never admitted:
 
-  { event, table, timestamp, row, rows, row_count, truncated }
-
-\`rows\` carries the changed row(s) the statement returned (the new row on
-insert/update, the old row on delete) and \`row\` is a convenience alias for
-\`rows[0]\`; a statement that returned nothing still fires the event with
-\`rows: []\`. The payload is bounded — 25 rows, 1 KB per field, 32 KB total,
-with \`truncated: true\` when it was trimmed.
-
-These channels are reachable with a DEVELOPER key: server-to-server
-consumers, CI, and operator tooling you run yourself. A browser cannot
-subscribe to them — see "What app-user sessions cannot reach" below. For a
-browser, declare a live view.
-
-## Publish and subscribe from outside — developer key
-
-From CI, a server you run, or an agent, publish on any channel name:
-
-  realtime_publish({
-    project_id: "my-app",
-    channel: "ops:deploys",
-    event: "shipped",
-    data: JSON.stringify({ version: 12 })
-  })
-
-  // → { channel, event, delivered }   delivered = sockets that received it
-
-Channel names match [a-zA-Z0-9][a-zA-Z0-9_\\-:.]{0,127}; \`event\` defaults
-to 'message'; payload cap 64 KB. Subscribe with the same authority by
-opening a WebSocket:
-
-  wss://api.somewhere.tech/v1/realtime/subscribe?project_id=<id>&channel=<name>&token=<developer key>
-
-  // envelope: { type, event, data, from, at }
-
-The key on that URL is a developer credential. Keep it in server-side code
-you control; never ship it to a browser. On reconnect the platform does not
-replay buffered events — refetch state over REST when you connect.
-\`realtime_channels({ project_id })\` lists channels touched in the last 10
-minutes with their subscriber counts.
-
-## What app-user sessions cannot reach
-
-An app-user session or JWT is refused on every realtime channel, for both
-publish and subscribe (\`CHANNEL_FORBIDDEN\`, 403). This is the whole
-standalone-channel surface being closed, not a per-channel rule: there is
-no browser chat channel, no presence, and no \`private:USERID:\` namespace
-in service today. What does reach a signed-in browser is a declared live
-view plus ordinary requests to your own functions.
-
-## Platform-emitted system events (developer key, subscribe-only)
-
-The platform publishes its own lifecycle events on two reserved channels.
-You don't publish to these — subscribe with a developer key and let the
-platform push.
-
-  realtime_subscribe_project({ project_id: 'my-app' })
+  events_subscribe_project({ project_id: 'my-app' })
   // → { channel: 'system:project', websocket_url, event_types: [...] }
 
-  realtime_subscribe_user({})
+  events_subscribe_user({})
   // → { channel: 'system:user', websocket_url, event_types: ['feedback_resolved'] }
 
-The 'system:project' channel emits:
-  - 'deployed' | 'patched' | 'restored' | 'rolled_back'
-      { version, by, message, has_functions } — multi-editor conflict
-      prevention. See a version bump, pull before pushing.
-  - 'db_health'
-      { event: 'cpu_exhaust_recovered' | 'cpu_exhaust_failed',
-        query_fingerprint } — fires when the platform retried a slow
-      query for the user.
-  - 'quota_warning'
-      { resource: 'storage' | 'database' | 'email' | 'realtime' |
-        'ai' | 'inbox', usage_percent, message } — fires once per 80%
-      and 95% crossing per resource per month.
-  - 'auth_event'
-      { event: 'user_deleted' | 'user_banned' | 'user_unbanned' |
-        'impersonation_started', user_id, actor_id }.
-
-The 'system:user' channel emits 'feedback_resolved' { ticket_id,
-response, resolution_status } when the platform team responds to or
-resolves a feedback() ticket you submitted. The channel is bound to your
-own user id.
-
-Platform-emitted events bypass the publish quota — they're free.
-
-## Limits
-Free: 100,000 publishes / month. Pro+: unlimited. Per-message
-payload cap: 64 KB.
-
-## Don't build with this
-Durable history, replay-on-connect, presence, stateful rooms. Realtime is a
-fire-and-forget transport. State belongs in sw.db — which is also what
-drives every live update a browser can see.
+The \`system:project\` channel emits deploy lifecycle, database health, quota
+warning, and auth administration events. The \`system:user\` channel emits
+\`feedback_resolved\` for tickets submitted by the authenticated developer.
+The returned WebSocket URLs are signed for that developer and reserved channel.
 `,
 
   'cron': `# Cron — Scheduled Tasks
@@ -7792,7 +8423,7 @@ records the job with \`trigger: "manual"\`. Read that task's history with
 
 The finest granularity is **one minute** — a 5-field expression has no
 seconds field, so you can't schedule "every 10 seconds." For sub-minute
-live updates, push via realtime as data arrives instead of scheduling →
+live updates, push as data arrives instead of scheduling →
 \`docs({ topic: 'live-data' })\`.
 
 ## Minimum interval
@@ -7973,10 +8604,9 @@ so the browser always re-reads through your function and never applies a row
 off the wire. \`watchLive\` also refreshes on reconnect, on tab focus, and
 at least every 30 seconds, so a missed invalidation self-heals.
 
-Realtime CHANNELS are not an option here: an app-user or anonymous browser
-session is refused on every channel (\`CHANNEL_FORBIDDEN\`, 403), and
-\`sw.realtime.publish\` is not available inside a function. See
-\`docs({ topic: 'realtime' })\`.
+Caller-chosen channels are not an option here. The supported browser
+path is the signed invalidation channel created by \`sw.db.live\`; see
+\`docs({ topic: 'live' })\`.
 
 ## Sub-minute updates (live sports, finance)
 
@@ -8127,7 +8757,8 @@ the automated cron + deploy hooks.
 Track work, incidents, or any todo-shaped state per project. Tasks
 and their comments live in the project's own database (auto-created
 on first write) so they travel with exports. Free +
-unlimited. Every mutation publishes a realtime event automatically.
+unlimited. Every mutation emits a task event on the project's signed
+system channel — see Notifications below.
 
 ## From a deployed function
 
@@ -8182,7 +8813,7 @@ await sw.tasks.delete(t.id)
 
 Every mutation publishes \`task.created\` / \`task.updated\` /
 \`task.deleted\` / \`task.commented\` on the project's
-\`system:project\` realtime channel — no config required.
+\`system:project\` system channel — no config required.
 
 Optionally fan out to a webhook URL and / or email:
 
@@ -8529,8 +9160,8 @@ live prices and per-tier caps (files, database, email, realtime publishes,
 upload size, uptime-check frequency). They differ along two axes:
 
 - **Core platform plus plan capabilities.** Every tier includes functions,
-  database, auth, outbound email, AI, payments, files, realtime, one-shot jobs,
-  queues, builds, and deploys. Higher tiers raise caps; Builder and higher add
+  database, auth, outbound email, AI, payments, files, live updates, one-shot
+  jobs, queues, builds, and deploys. Higher tiers raise caps; Builder and higher add
   customer cron and recurring smoke checks. See /v1/pricing for the current
   numbers and capability flags.
 - **Service level.** Free shows a "Built on Somewhere" badge and uses its
@@ -8571,6 +9202,43 @@ existing code behaves — read it before assuming a new failure is yours.
 
 Each entry names a topic. That topic, not this line, is the current contract.
 
+- **2026-09-20 — eligible public pages and assets on your own host are served
+  before the routing check, not after it.** On a project host or a custom
+  domain, a \`GET\` or \`HEAD\` for a page, a compiled asset or a public file
+  — answered from a route that location resolved recently — is served while
+  the routing check runs behind the response. For up to 60 seconds after a
+  deploy, a location that missed the update can still answer with the previous
+  release; past that window, and whenever there is no recent route to go on,
+  the request is exact, and a failed check never extends the window. Requests
+  that are not plain \`GET\`/\`HEAD\`, preview and development addresses, group
+  and platform-overlay surfaces, and the platform's own \`somewhere.tech\`
+  addresses resolve the route before answering, as before. Nothing to change in
+  your code. \`docs({ topic: 'speed' })\`.
+- **2026-09-19 — public reads may be served from a shared copy; a declared
+  write drops it.** On a table declaring \`client.publicRead\`, a \`list\`,
+  \`get\` or related-record page requested with no session, no visitor
+  cookie and no \`Authorization\` may be answered from a shared copy kept
+  close to readers. A committed declared write or transaction to that table
+  drops the copy, so the change usually reaches the next anonymous reader
+  within a second or two; if the drop is missed, the old answer lives at most
+  about two minutes from when the database produced it. Reads carrying any
+  identity, and every owner, member and private read, are unchanged and
+  exact. Developer SQL writes are not declared operations and are picked up
+  only when the copy expires. \`docs({ topic: 'declared-data' })\`.
+- **2026-09-19 — composed aggregates.** \`sw.db.aggregate\` and
+  \`sw.db.server.aggregate\` compose count / sum / avg / min / max with
+  \`groupBy\`, \`where\`, \`has\`, \`having\`, \`order\` and \`limit\`,
+  with the caller's row permissions in the same WHERE. The generated browser
+  client gains \`aggregate\` on every table with a \`read\` grant, over
+  readable fields only; grouped calls return at most 100 groups and report
+  \`has_more\`. Nothing existing changes. \`docs({ topic: 'sw.db' })\`.
+- **2026-09-19 — \`belongsTo\` relations.** \`relations: { project:
+  belongsTo('projects', 'project_id') }\` on the table that holds the key is
+  the inverse of \`hasMany\`. In functions, \`include: ['project']\` nests
+  the single parent row, or \`null\` when the parent is missing or not
+  readable by the caller; \`has: { project: { … } }\` filters by it. The
+  browser client adds no method; read a parent with \`get\`.
+  \`docs({ topic: 'sw.db' })\`.
 - **Outbound guard now refuses literal blocked targets (it used to observe
   only).** A request that reaches the platform's outbound guard with a
   non-public address or internal hostname, embedded \`user:password\`, a
@@ -9123,7 +9791,7 @@ state is durably recorded:
 Full setup and limits: \`docs({ topic: 'sw.email' })\`,
 \`docs({ topic: 'analytics' })\`, \`docs({ topic: 'render' })\`,
 \`docs({ topic: 'sw.jobs' })\`, \`docs({ topic: 'sw.queue' })\`,
-\`docs({ topic: 'realtime' })\`, and \`docs({ topic: 'sw.push' })\`.
+\`docs({ topic: 'live' })\`, and \`docs({ topic: 'sw.push' })\`.
 
 ## Webhook events — what each flow actually emits
 
@@ -9681,7 +10349,7 @@ demo.
 
 **Want a worked example first?** [emailsomewhere.com](https://emailsomewhere.com)
 is a complete email product built end-to-end on these same primitives —
-15 API routes, 12 tables, AI inbox classification, realtime UI. No
+15 API routes, 12 tables, AI inbox classification, live UI. No
 internal helpers, no special access. Same APIs you'll have. Good
 reference for "what does a real app actually look like here."
 
@@ -9736,15 +10404,13 @@ export default async function (req, sw) {
 // api/auth/signup.ts
 export default async function (req, sw) {
   const { email, password } = await req.json()
-  const result = await sw.auth.signup({ email, password })
-  return Response.json(result)
+  return Response.json(await sw.auth.signupWithCookie(req, email, password))
 }
 
 // api/auth/login.ts
 export default async function (req, sw) {
   const { email, password } = await req.json()
-  const result = await sw.auth.login({ email, password })
-  return Response.json(result)
+  return Response.json(await sw.auth.loginWithCookie(req, email, password))
 }
 
 // api/auth/me.ts
@@ -9754,6 +10420,12 @@ export default async function (req, sw) {
   return Response.json(user)
 }
 \`\`\`
+
+For browser routes, use the cookie helpers above. They return \`{ user }\`, and
+the runtime adds the protected session cookies to the \`Response.json(...)\`
+response. \`sw.auth.signup(...)\` and \`sw.auth.login(...)\` instead return bearer
+token responses and do not set cookies. Expected signup and login failures keep
+their structured 4xx status and message.
 
 \`sw.auth.fromRequest(req)\` reads the cookie or Authorization header
 and returns the validated user — or null. **Never** parse cookies
@@ -9901,9 +10573,8 @@ operator workflow.
   \`sw.email.send\` / \`email_send\`. See \`docs({ topic: 'sw.email' })\`.
 - A live page should change without polling → declare the read as a live
   view with \`sw.db.live(name, sw.db.from(...))\` and subscribe with
-  \`watchLive\`. Realtime channels are developer-authority only and
-  \`sw.realtime.*\` is not available in a function. See
-  \`docs({ topic: 'realtime' })\`.
+  \`watchLive\`. See
+  \`docs({ topic: 'live' })\`.
 - An alert must arrive after the tab closes → \`sw.push.send({ payload,
   user_id })\` / \`push_send\`, against subscriptions registered with
   \`push_subscribe\` (developer authority; \`sw.push.subscribe\` is not
@@ -9930,9 +10601,37 @@ operator workflow.
 
 ## Step 6 — Build the frontend
 
-Plain \`index.html\` (or React, or whatever) that calls your \`api/*\`
-endpoints with \`fetch\`. The cookie set in Step 2 is sent automatically
-on same-origin requests.
+A plain HTML page (or React, or whatever) can use both browser auth flows and
+then call protected \`api/*\` endpoints with ordinary same-origin requests:
+
+\`\`\`html
+<button onclick="location.href='/api/auth/google'">Continue with Google</button>
+<script>
+  async function emailSignup(email, password) {
+    return fetch('/api/auth/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    })
+  }
+
+  async function emailLogin(email, password) {
+    return fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    })
+  }
+
+  async function loadMe() {
+    return fetch('/api/auth/me')
+  }
+</script>
+\`\`\`
+
+The Google callback in Step 2 and the email endpoints in Step 3 all set the
+same protected cookie session. The browser accepts those cookies and sends
+them automatically on later same-origin requests such as \`/api/auth/me\`.
 
 ## Step 7 — Run locally
 
@@ -10025,7 +10724,7 @@ Call docs({ topic: "<name>" }) for any of:
     analytics, inbox, calls
 
   Platform features
-    functions, realtime, cron, billing
+    functions, live, cron, billing
 `,
 
   'setup': `# Setup — Use the CLI, or connect MCP without a shell
@@ -10598,8 +11297,10 @@ the old version, it's almost always cache:
 1. **Browser cache.** Hard reload (Cmd-Shift-R) or open the URL in a
    private window.
 2. **Edge cache.** \`curl -sI https://{subdomain}.somewhere.site/\`
-   shows the response headers — \`cache-control\` tells you whether it
-   was cached.
+   shows the response headers. Where present, \`X-Somewhere-Edge-Cache\`
+   reports a platform cache hit or miss. \`Cache-Control\` describes what
+   the browser may cache; it does not tell you whether the platform reused
+   stored bytes.
 3. **Wrong project.** Confirm the \`project_id\` matches the subdomain
    you're hitting.
 
@@ -10637,16 +11338,16 @@ server-side cross-user mode \`{ asServer: true }\` with
 \`sw.db.from\` / \`sw.db.count\`; or put the data on a \`shared()\` /
 \`serverOnly()\` table and manage the visitor key yourself.
 
-## "REALTIME_UNAVAILABLE" / "CHANNEL_FORBIDDEN"
+## "REALTIME_RETIRED" (410) or "CHANNEL_FORBIDDEN" (403)
 
-\`sw.realtime.*\` is not available inside a deployed function, and realtime
-channels refuse app-user and visitor sessions. Neither is a
-configuration problem and there is no flag to turn them on.
+Caller-named channels are retired. This is not a configuration problem and
+there is no flag to turn them on.
 
 Fix: for browser live updates declare a live view —
-\`sw.db.live(name, sw.db.from(...))\` + \`watchLive\`. For server-to-server
-fan-out, publish and subscribe with a developer key. See
-\`docs({ topic: 'realtime' })\`.
+\`sw.db.live(name, sw.db.from(...))\` + \`watchLive\`. Developer tooling can
+subscribe to the reserved platform system channels with
+\`events_subscribe_project\` or \`events_subscribe_user\`. See
+\`docs({ topic: 'live' })\`.
 
 ## "payload is required" from sw.push.send
 
@@ -11804,7 +12505,7 @@ What's different from Postgres (most don't matter for app code):
   \`db_migrate\` + \`db_scope_set\` — see the two-worlds section in
   docs({ topic: 'sw.db' }).
 - **Vector search** — \`sw.search.*\` gives you embeddings + similarity queries over your tables without bolting on a separate vector database.
-- **Realtime DB events** — the developer-side \`db_webhook_set/get/delete\`
+- **Database change events** — the developer-side \`db_webhook_set/get/delete\`
   tools register a webhook on INSERT/UPDATE/DELETE. Cleaner than LISTEN/NOTIFY
   for typical app use.
 - **Per-user row scoping** — the structured builder
@@ -11924,11 +12625,14 @@ Arrays are the most common: store them as a JSON text column and unroll with \`j
 
 PL/pgSQL (write logic in your server function), PostGIS, table
 partitioning, and custom engine index types (GIN/GiST/BRIN — use an
-app-managed index table + FTS5). For genuinely Postgres-only needs, export and
-move the workload to Postgres. The platform does not provide a managed Postgres
-adapter or an automatic migration service.
+app-managed index table + FTS5). For genuinely Postgres-only needs you can
+attach your own PostgreSQL database and query it alongside \`sw.db\` —
+\`docs({ topic: 'postgres' })\` — or export and move the workload out entirely.
+Either way the platform does not provide a managed Postgres adapter or an
+automatic migration service: an attached database is pass-through, and moving
+existing data into it is yours to do.
 
-Related: \`database-engine\`, \`sw.db\`, \`portability\`.
+Related: \`database-engine\`, \`sw.db\`, \`postgres\`, \`portability\`.
 `,
 
   'cors': `# CORS — which browser origins may call your \`/api/*\` functions
@@ -12266,17 +12970,18 @@ sqlite3 backup.db < backup.sql
 pgloader backup.db postgresql://user:pass@host/db
 \`\`\`
 
-## Neon integration status
+## Attaching PostgreSQL instead of leaving
 
-Today, Neon is an external Postgres destination: create and configure the
-database, run the conversion above, review dialect differences, and replace
-\`sw.db\` calls manually.
+You do not have to move OUT to run PostgreSQL. A project can attach one
+external PostgreSQL database — a Neon database in your own Neon account, paid
+for by you — and query it from your functions through the provider's own
+driver. \`docs({ topic: 'postgres' })\` is the contract.
 
-**Planned, with no committed release date:** a direct managed Neon integration.
-The scope under evaluation is guided provisioning, connection setup, and
-migration assistance. It is not a promise of automatic or lossless conversion;
-schema semantics, queries, authorization policy, transactions, region choice,
-and recovery settings still require review.
+Be clear about what that is and is not. It is pass-through: your account, your
+billing, your authorization decisions, and the driver's own semantics. There is
+no managed overlay, no automatic row permissions, and no migration assistance —
+attaching a database does not move any existing data into it. Moving data is
+still the conversion above, reviewed by you.
 
 Review the dialect seams in \`migration.txt\` after conversion. The platform
 never sees the \`.sql\` after handing it to you. \`sw.db.dump()\` is not
@@ -12416,7 +13121,7 @@ Related: \`sw.db\`, \`security-model\`, \`portability\`.
 | Auth                | \`sw.auth\` (Google, magic link, MFA) | \`supabase.auth\` |
 | Storage             | \`sw.fs\` (no egress fees)  | \`supabase.storage\` (S3) |
 | Row-level security  | \`sw.db.from/insert/update\` (auto-scoped) | Postgres RLS policies |
-| Realtime DB events  | developer-side \`db_webhook_*\` tools | Postgres replication |
+| Database change events | developer-side \`db_webhook_*\` tools | Postgres replication |
 | Vector search       | \`sw.search\` (built-in)     | pgvector (add-on) |
 | Edge functions      | every \`api/*\` file         | \`/functions/v1/*\` |
 | Email send/receive  | \`sw.email\` + \`sw.inbox\`    | not included — wire Resend |
