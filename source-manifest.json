@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "source_repository": "Somewhere-Tech/somewhere-tech",
-  "source_ref": "f6561aff5f11b3182a8291f44f585cbf3b2a5d09",
-  "source_sha": "f6561aff5f11b3182a8291f44f585cbf3b2a5d09",
+  "source_ref": "32e2dfc6fd0f454070f8a053cba4627aad5a1868",
+  "source_sha": "32e2dfc6fd0f454070f8a053cba4627aad5a1868",
   "files": {
     ".cursor-plugin/plugin.json": {
       "bytes": 458,
@@ -141,8 +141,8 @@
       "sha256": "5d2d9ed5f2eb4776c536d9058f3fa78308313ad68aa65d916dcff250fb937f3a"
     },
     "mcp-server/src/platform-help.ts": {
-      "bytes": 642032,
-      "sha256": "d2dae94e36210a0364b8342eb17621bcef5fc2bda03392b242560fa89150d0c4"
+      "bytes": 642384,
+      "sha256": "6e8e2b987f11110dd9db5f29dc25ba588ea260b40b9d17a2694a68b3395ca359"
     },
     "mcp-server/src/project-deploy-input.ts": {
       "bytes": 967,

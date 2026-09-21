@@ -2121,7 +2121,7 @@ Composed calls — \`sw.db.from\` / \`count\` / \`aggregate\` / \`insert\` /
 \`update\` / \`remove\` / \`tx\` — run on the project's own database
 connection and are the ordinary path. \`sw.db.server.query\` and
 \`sw.db.server.batch\` reach the database over a separate read-only route and
-cost meaningfully more per call, so reach for a composed call first and keep
+take more network requests per statement, so reach for a composed call first and keep
 raw SQL for what it cannot express. Independent raw reads belong in ONE
 \`sw.db.server.batch\` rather than several awaited \`sw.db.server.query\`
 calls; dependent ones stay sequential. Independent COMPOSED reads started
@@ -2338,14 +2338,20 @@ permissions into the question the platform composes; \`docs({ topic: 'sw.db' })\
 has their full contracts. When a read genuinely cannot be expressed this way it
 stays sequential. That is a correct program, just a slower one.
 
-## Raw server SQL costs more per call
+## What raw server SQL costs
 
 On a project with a declared schema, ordinary \`sw.db.query\` and
 \`sw.db.batch\` are refused. The escape hatch is \`sw.db.server.query\` /
-\`sw.db.server.batch\`, which reach the database over a separate read-only
-route rather than the project's own connection, and cost meaningfully more per
-call than a composed operation. They also do not apply declared row
-permissions — authorize the caller yourself before calling them.
+\`sw.db.server.batch\`. They also do not apply declared row permissions —
+authorize the caller yourself before calling them.
+
+Where the extra cost comes from: a declared structured operation can run on
+the project's own database connection, while an explicit server statement goes
+as a separate platform request that then reaches the database through the
+provider's authorized read-only API. That is more network requests per
+statement, and more requests can add latency. How much, and whether it matters
+for a given statement, depends on your workload and where things sit — so
+measure your own app rather than budgeting from a figure.
 
 So, in order:
 
