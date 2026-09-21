@@ -2475,6 +2475,12 @@ an assertion by the browser, not an identity.
 and so on, with the values sent alongside the statement — that is what makes a
 value a value rather than more SQL.
 
+The driver also carries \`sql.unsafe(text)\`. It is NOT a way to run a query:
+it builds a FRAGMENT whose text is spliced verbatim, unparameterized, into a
+tagged template you interpolate it into. Awaiting it on its own returns the
+fragment object rather than rows, which is easy to mistake for a result. Reach
+for it only to compose a piece of SQL you wrote yourself, never for a value.
+
 \`\`\`ts
 export default async function (req, sw) {
   // WHO is asking — decided by the server, from the session.
@@ -2515,6 +2521,16 @@ const [a, b] = await sw.postgres.transaction([
 ]);
 \`\`\`
 
+**A third argument does not scope anything.** On \`sw.db\`, passing
+\`{ user }\` to raw SQL is refused outright
+(\`RAW_SQL_CANNOT_BE_PLATFORM_SCOPED\`). Here nothing wraps the driver, so the
+third parameter of \`query(text, params, options)\` is the DRIVER'S options —
+\`{ user }\` is not one of them, it is ignored, and you get every row the
+statement selects with no error and no warning. If you are carrying a handler
+over from \`sw.db\`, the scope does not come with it. Put the restriction in
+the statement — a parameterized \`WHERE\` over the identity your own code
+verified — and check the caller's permission yourself.
+
 A query resolves to an ARRAY OF ROWS. There is no \`{ data, error }\` envelope, no
 \`.data\` and no \`.rows\` to unwrap — those belong to \`sw.db\` and to other
 drivers, not to this one. Errors are the driver's errors and they throw. Result
@@ -2524,6 +2540,24 @@ the driver on its next release and hide failures you need to see.
 
 Nothing else from \`sw.db\` applies either — no automatic owner column, no
 declared relations, no aggregate builder, no live views.
+
+**If you are planning to lean on row-level security, check which role is
+attached first.** Attaching connects as whichever role you named, and the
+default a freshly created database offers is its OWNER — typically also
+\`BYPASSRLS\`. Either of those alone makes RLS inert for this connection, and
+they fail differently from how people expect: a table's owner is exempt from
+its own policies unless the table is set to \`FORCE ROW LEVEL SECURITY\`, and
+\`FORCE\` still does NOT constrain a role holding \`BYPASSRLS\`. So you can
+enable RLS, write a correct policy, and have every row come back anyway — with
+no error to tell you.
+
+If RLS is part of your design, attach a purpose-made role instead: not the
+owner of the tables, \`NOBYPASSRLS\`, and granted only the privileges your
+handlers need. Name it with \`--role\` when you attach. The platform does not
+create, alter or manage roles in your account — it connects as the one you
+name — so confirm the privileges yourself in your provider account (its
+\`rolbypassrls\` flag and the ownership of the tables it reads) rather than
+assuming a role is limited because it is not the one you started with.
 
 If no database is attached, or the release was deployed before one was attached,
 the binding throws \`POSTGRES_NOT_ATTACHED\` and the fix is the same both times:
@@ -2551,6 +2585,13 @@ somewhere postgres create --project my-app --region aws-us-east-2
 
 somewhere postgres status --project my-app
 \`\`\`
+
+**Which key you store decides how much of your Neon account this project can
+reach.** An organization- or account-scoped key authorizes every project in
+that account — that is the intended shape for creating one, since a project
+that does not exist yet cannot be named. For a database you ALREADY have,
+prefer a project-scoped key and name it with \`--neon-project\` on connect:
+the stored credential then reaches that one Neon project and nothing else.
 
 The same operations are \`POST /v1/postgres/connect\`,
 \`POST /v1/postgres/attach\`, \`POST /v1/postgres/create\`,
@@ -2604,6 +2645,12 @@ that reaches your deployed functions. Neither is ever returned by any route.
   exactly as they are, and deleting them is something only you do, in your own
   Neon account. Disconnect also keeps your stored API key unless you pass
   \`--forget-key\`.
+- **Deleting a function locally does not withdraw it.** A deployed function
+  you removed from your source keeps serving until you deploy with
+  \`--replace-functions\` (\`replace_functions: true\` through the API), which
+  is what actually drops the ones your source no longer has. Worth knowing
+  here specifically: an admin or debug endpoint you wrote against the database
+  and then deleted is still answering requests until that deploy.
 - **Attaching does not rotate your database password.** If you need the old
   credential to stop working, rotate it in Neon.
 
