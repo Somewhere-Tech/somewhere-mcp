@@ -6196,7 +6196,7 @@ that speaks the offer/answer SDP dance works.
 ## Default model recommendation
 
 Omit both \`provider\` and \`model\` to start with free
-\`gpt-5.6-luna\`. No API key or balance is needed. The allowance is
+\`gpt-6-luna\`. No API key or balance is needed. The allowance is
 10 requests/minute and 200/day per project owner, across their projects,
 on every plan. Each call accepts at most 8,192 estimated input tokens
 (including system text, tools and retained history) and 1,024 output tokens.
@@ -6209,7 +6209,7 @@ Use \`r.text\` for text, \`r.content\` for content blocks, and
 
 For larger requests or a different model, choose an explicit provider/model
 from \`ai_catalog\`. Explicit \`provider: 'openai'\` or
-\`model: 'gpt-5.6-luna'\` selects the paid path even for the same model.
+\`model: 'gpt-6-luna'\` selects the paid path even for the same model.
 Explicit \`provider: 'workers-ai'\` retains its separate included-model
 limits. Free responses use platform credentials even if you configured BYOK.
 
@@ -6291,7 +6291,7 @@ const grokResult = await sw.ai.chat({
 // in /v1/pricing. Call ai_catalog for the live model list and categories.
 const gptResult = await sw.ai.chat({
   provider: 'openai',
-  model: 'gpt-5.6-luna',
+  model: 'gpt-6-luna',
   messages: [{ role: 'user', content: 'Explain quicksort in two sentences.' }],
   max_tokens: 256
 })
@@ -6319,7 +6319,7 @@ xai / workers-ai returns a VALIDATION_ERROR.
 
 const flexResult = await sw.ai.chat({
   provider: 'openai',
-  model: 'gpt-5.6-luna',
+  model: 'gpt-6-luna',
   service_tier: 'flex',
   messages: [{ role: 'user', content: 'Summarize this article…' }],
   max_tokens: 512
@@ -6337,10 +6337,10 @@ request on standard, and the result's service_tier then reads
 explicit hint to retry or fall back to service_tier:'standard':
 
 try {
-  return await sw.ai.chat({ provider:'openai', model:'gpt-5.6-luna', service_tier:'flex', messages })
+  return await sw.ai.chat({ provider:'openai', model:'gpt-6-luna', service_tier:'flex', messages })
 } catch (err) {
   // err.code === 'UPSTREAM_ERROR', status 429 — capacity unavailable.
-  return await sw.ai.chat({ provider:'openai', model:'gpt-5.6-luna', messages })
+  return await sw.ai.chat({ provider:'openai', model:'gpt-6-luna', messages })
 }
 
 Per-model token rates are not hardcoded here — call \`ai_catalog\` (or
@@ -6451,7 +6451,7 @@ return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } }
 //
 // On every other provider stream is NOT honoured:
 //   xai / openai / deepseek / deepinfra — and the free default
-//     (gpt-5.6-luna, what you get when you omit provider/model) — reject
+//     (gpt-6-luna, what you get when you omit provider/model) — reject
 //     it with VALIDATION_ERROR "stream=true is not supported on the
 //     <provider> provider yet." Uncaught in a handler that surfaces as a
 //     500, so branch on the provider before you set the flag.
@@ -6543,7 +6543,7 @@ await sw.ai.chat({
   compaction: {
     mode: 'summarize',
     provider: 'openai',        // optional; defaults to primary provider
-    model: 'gpt-5.6-luna',     // required in object form
+    model: 'gpt-6-luna',     // required in object form
   },
   messages: [{ role: 'user', content: 'continue' }]
 })
@@ -6820,7 +6820,7 @@ together, with no second markup.
 ## Free chat
 
 Default pick — omit both provider/model and the platform serves
-\`gpt-5.6-luna\` from the account's included managed-AI allowance: $0.50 per
+\`gpt-6-luna\` from the account's included managed-AI allowance: $0.50 per
 month on Free and $5 per billing period on paid plans. Every plan also has the
 same owner-level request envelope: 10 requests/minute, 200/day, 8,192 estimated
 input tokens including system/tools/history, and 1,024 output tokens per call.
@@ -11111,7 +11111,7 @@ Porting an app → docs({ topic: 'migration-supabase' }).
 ## Default model recommendation
 
 Start with \`await sw.ai.chat({ messages: [...] })\`: omit both provider
-and model for free \`gpt-5.6-luna\`. The allowance is 10 requests/minute,
+and model for free \`gpt-6-luna\`. The allowance is 10 requests/minute,
 200/day per owner on every plan, with 8,192 estimated input and 1,024 output
 tokens per call. There is no paid fallback. For larger requests or another
 model, choose an explicit provider/model from \`ai_catalog\`.
@@ -12345,7 +12345,7 @@ prior messages server-side — your handler stays stateless.
 - **Structured output instead of tool-use:** pass \`response_schema\`
   and read \`r.parsed\`. The free default makes no repair call on parse failure.
 - **Free model:** omit \`provider\` and \`model\` to use
-  \`gpt-5.6-luna\` — no activation required, rate-limited and
+  \`gpt-6-luna\` — no activation required, rate-limited and
   capped, but free to the user.
 - **Meaning-based knowledge lookup:** create an index once with
   \`search_index_create\`, then \`search_upsert\` whenever a knowledge row

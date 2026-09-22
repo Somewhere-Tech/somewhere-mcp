@@ -131,7 +131,7 @@ interface Env {
   //   printf '%s' "sk-..." | npx wrangler secret put OPENAI_API_KEY
   // Without this the advisor tool returns a setup-required error.
   OPENAI_API_KEY?: string;
-  // Advisor model flip. Defaults to gpt-5.6-terra; changing the secret/var
+  // Advisor model flip. Defaults to gpt-6-sol; changing the secret/var
   // repoints both anonymous and authenticated advisor traffic together.
   ADVISOR_MODEL?: string;
   // Legacy Sonnet fallback. Kept bound so a future switch back is one
@@ -7666,9 +7666,9 @@ Marketing email requires \`topic\`; recipient preferences, suppression, and the 
     name: 'ai_complete',
     description: `Call a platform AI model for a project. Start with ai_catalog for current models and prices; docs({topic:"sw.ai"}) explains the full contract.
 
-Omit both provider and model for free gpt-5.6-luna: 10 requests/minute and 200/day per project owner on every plan, 8,192 estimated input tokens including system/tools/history, and at most 1,024 output tokens. Standard service, reasoning disabled, 20-second provider deadline including the body. No paid fallback, BYOK charge, or automatic paid repair.
+Omit both provider and model for free gpt-6-luna: 10 requests/minute and 200/day per project owner on every plan, 8,192 estimated input tokens including system/tools/history, and at most 1,024 output tokens. Standard service, reasoning disabled, 20-second provider deadline including the body. No paid fallback, BYOK charge, or automatic paid repair.
 
-Explicit provider/model selection uses that model's normal billing path, including explicitly selecting gpt-5.6-luna. Included workers-ai models retain their separate limits. Read ai_catalog instead of guessing model IDs.
+Explicit provider/model selection uses that model's normal billing path, including explicitly selecting gpt-6-luna. Included workers-ai models retain their separate limits. Read ai_catalog instead of guessing model IDs.
 
 messages is a JSON-stringified array of {role,content}. For text use result.text; result.content contains text/tool_use blocks. With response_schema, inspect result.parsed and result.parse_error. Paid OpenAI/Anthropic responses may report pending cost: unknown is not zero, and you should not repeat a successful model call to settle accounting.
 

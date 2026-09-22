@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "source_repository": "Somewhere-Tech/somewhere-tech",
-  "source_ref": "531de32cd4e0e8282b8d8f34263b257775ab065c",
-  "source_sha": "531de32cd4e0e8282b8d8f34263b257775ab065c",
+  "source_ref": "bb030a83e8ec63477375b1784219386b8867a2c1",
+  "source_sha": "bb030a83e8ec63477375b1784219386b8867a2c1",
   "files": {
     ".cursor-plugin/plugin.json": {
       "bytes": 458,
@@ -85,8 +85,8 @@
       "sha256": "4aa57d2498673324a56b78c848bae3f07828dec8ed86ec3b222aed05293feb0b"
     },
     "mcp-server/src/advisor-model-profile.ts": {
-      "bytes": 1814,
-      "sha256": "469f66874139d66fd8f5d7d015dafed4d16e92ca2bbb12ed37ddcbd9a73964ab"
+      "bytes": 2001,
+      "sha256": "c02c307a59b31deebee674c4e2a34b5276a6bc12fdf01b7d408bb1c688c5276f"
     },
     "mcp-server/src/advisor-project-facts.ts": {
       "bytes": 3248,
@@ -133,16 +133,16 @@
       "sha256": "e2821fea6ca76f952a05c11e1fa397c08f607ea78cce4ca093baa37d8237976c"
     },
     "mcp-server/src/index.ts": {
-      "bytes": 930231,
-      "sha256": "9e4967c03922e5a288d2129bd7b7cd686d0d57d4c76c7531506c47d6d352bd83"
+      "bytes": 930223,
+      "sha256": "5c2017d8049c54674340de96bfe80214bd0f4c5890a9220293e5257647ddf980"
     },
     "mcp-server/src/platform-help-derived.ts": {
-      "bytes": 450728,
-      "sha256": "3816485638ae4c008254759f3df498b5ccf6111a51269a12a2ad88f86a810a76"
+      "bytes": 450880,
+      "sha256": "eefa181269a74cdc75b53b53921a3b733969d804408060422c98d6f7caa0fe17"
     },
     "mcp-server/src/platform-help.ts": {
-      "bytes": 665988,
-      "sha256": "378c8ce4a659fe934270c6e68fd30d977037880d0de8a170865f141d6c8d512a"
+      "bytes": 665966,
+      "sha256": "c4d066ccd478013f0b4cc53b2cb5290be3b0c66b1fd5e6e8354a9ed3c540fbc0"
     },
     "mcp-server/src/project-deploy-input.ts": {
       "bytes": 967,

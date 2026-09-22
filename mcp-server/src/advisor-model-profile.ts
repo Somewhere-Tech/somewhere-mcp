@@ -1,13 +1,17 @@
-export const ADVISOR_DEFAULT_MODEL = 'gpt-5.6-terra';
+export const ADVISOR_DEFAULT_MODEL = 'gpt-6-sol';
 export const ADVISOR_RESPONSE_BUDGET_MS = 25_000;
 export const ADVISOR_MAX_OUTPUT_TOKENS = 2_000;
 
-// Official model and prompt-caching pages, verified 2026-09-07.
+// Official model and prompt-caching pages, verified 2026-09-22.
 // Dollars per million tokens: ordinary input, cache read, cache write, output.
 // https://developers.openai.com/api/docs/models/gpt-5.6-terra
+// https://developers.openai.com/api/docs/models/gpt-6-sol
+// https://developers.openai.com/api/docs/models/gpt-6-luna
 // https://developers.openai.com/api/docs/guides/prompt-caching
-// The two prior profiles remain explicit rollback choices, never retries.
+// Prior profiles remain explicit choices, never automatic retries.
 const RATES: Readonly<Record<string, readonly [number, number, number, number]>> = {
+  'gpt-6-sol': [2, 0.20, 2.50, 10],
+  'gpt-6-luna': [0.10, 0.01, 0.125, 0.50],
   'gpt-5.6-terra': [2, 0.20, 2.50, 12],
   'gpt-5.6-sol': [4, 0.40, 5, 20],
   'gpt-5.6-luna': [0.20, 0.02, 0.25, 1.20],
