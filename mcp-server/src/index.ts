@@ -933,14 +933,14 @@ function captureHelpResult(): ToolUpstreamResult {
   return {
     status: 200,
     data: {
-      summary: 'browser — the ONE capture surface: SEE / INSPECT / DRIVE any web page in a real headless browser, and take a picture OR a PDF of it. Two modes: EYES (perception, no project_id) and VERIFY (project QA, project_id). Omit actions/steps to inspect; add actions to drive. render_screenshot and render_pdf are deprecated aliases of this tool and still work.',
+      summary: 'browser — one browser surface for public-page inspection and owned-project verification. External public URLs support inspection and screenshots only. Actions, evaluation, authentication, session seeding, and persistent sessions require project_id and an origin owned by that project. render_screenshot and render_pdf are deprecated aliases of this tool and still work.',
       modes: {
-        eyes: 'perception — NO project_id, any public url. Look at / inspect / screenshot ANY page. Screenshot returns inline (auto-downscaled) by default, or store:true → a short-TTL signed scratch_url (never durable storage). No-actions inspect includes the interactive-element map. An explicit include list selects sections; include "dom" to retain the map and "network" for the full request table. No auth, no origin-lock.',
-        verify: 'project QA — pass project_id. Drive + assert YOUR deployed app: steps (click/fill/assert), auth:{user_id} (1h audited impersonation), screenshots stored durably to the project filesystem (fs_path). Origin-locked — a url must be on the project origin.',
+        eyes: 'public-page inspection — no project_id. Any safe public URL can be inspected or screenshotted, without actions, evaluation, authentication, session seeds, or a persistent session. Screenshots return inline (auto-downscaled) by default; store:true returns a short-TTL signed scratch_url and never writes durable project storage. No-actions inspection includes the interactive-element map. An explicit include list selects sections; include "dom" retains the map and "network" adds the full request table.',
+        verify: 'owned-project QA — project_id identifies the caller-owned project and locks the document origin. Actions and assertions operate on that deployed app; auth:{user_id} provides a 1h audited impersonation session, and screenshots can be stored durably in the project filesystem (fs_path).',
       },
       targets: {
-        project_id: 'VERIFY mode — your project (required for stored screenshots + auth; origin-locked)',
-        url: 'EYES mode when alone (any public page); on-origin WITH project_id',
+        project_id: 'Owned-project verification (required for actions, evaluation, session state, persistent sessions, stored screenshots, and auth; origin-locked)',
+        url: 'Public URL inspection when used without project_id; an owned-project origin when actions or session state are present with project_id',
         html: 'render a raw HTML snippet straight to an image',
         store: 'EYES mode only — store:true persists the full-res shot to an ephemeral scratch store and returns a short-TTL screenshots[].scratch_url instead of inline base64 (ignored with a project_id)',
       },
@@ -16025,6 +16025,17 @@ function constrainNextCallToSurface(
   payload: unknown,
   surface: ToolSurface,
 ): NextCallRecommendation {
+  if (surface === 'connector'
+    && nextCall.tool === 'support_ticket'
+    && surfaceAllowsCanonicalTool(surface, 'api_write')) {
+    return {
+      tool: 'api_write',
+      args_skeleton: {
+        calls: [{ method: 'POST', path: '/v1/platform-feedback', body: { message: '...' } }],
+      },
+      one_line_why: 'The connector support route is POST /v1/platform-feedback through api_write; its response contains the ticket_id.',
+    };
+  }
   if (!surfaceAllowsCanonicalTool(surface, nextCall.tool)) {
     return catalogNextCall(nextCall.tool);
   }
@@ -16080,6 +16091,29 @@ function constrainResponseGuidance(
     out.http_status = httpStatus;
     out.canonical_error = { code, http_status: httpStatus };
   }
+  const projectConnectorSupportHint = (record: Record<string, unknown>, errorEnvelope: boolean): void => {
+    if (surface === 'connector'
+      && errorEnvelope
+      && record.ok === false
+      && typeof record.hint === 'string'
+      && record.hint.includes('support_ticket')) {
+      record.hint = 'Platform support submissions are available through api_write with POST /v1/platform-feedback and a JSON body containing message; the response contains ticket_id. Ticket status is available through api_read with GET /v1/platform-feedback/:ticket_id.';
+    }
+  };
+  projectConnectorSupportHint(out, isFailure);
+  if (surface === 'connector'
+    && (attemptedTool === 'api_read' || attemptedTool === 'api_write')
+    && Array.isArray(out.results)) {
+    for (const result of out.results) {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) continue;
+      const outcome = result as Record<string, unknown>;
+      if (typeof outcome.status !== 'number'
+        || !outcome.data
+        || typeof outcome.data !== 'object'
+        || Array.isArray(outcome.data)) continue;
+      projectConnectorSupportHint(outcome.data as Record<string, unknown>, outcome.status >= 400);
+    }
+  }
   const visit = (value: unknown): void => {
     if (!value || typeof value !== 'object') return;
     if (Array.isArray(value)) {
@@ -16090,8 +16124,11 @@ function constrainResponseGuidance(
     // Response records are runtime data, not the curated guidance corpus.
     // Their message/hint fields can contain customer logs, database values,
     // user content, or echoed input (including ordinary paths like /api/*),
-    // so they must remain byte-for-byte intact. Only the structured next_call
-    // recommendation below is projected onto the active tool surface.
+    // so they remain byte-for-byte intact. The exceptions above are the known
+    // top-level platform error envelope and immediate api_read/api_write
+    // outcome envelopes whose support hint names an unavailable tool.
+    // Structured next_call recommendations are also projected onto the active
+    // tool surface below.
     if (record.next_call && typeof record.next_call === 'object' && !Array.isArray(record.next_call)) {
       const candidate = record.next_call as Partial<NextCallRecommendation>;
       if (typeof candidate.tool === 'string') {

@@ -19,6 +19,26 @@ const env = { SOMEWHERE_TECH_ADMIN_KEY: 'fixture-only', API_SERVICE: { async fet
   }], newly_delivered_notice_ids: ['notice_fixture'] } });
   if (url.pathname === '/v1/fixture-large') return Response.json({ok:true,data:'x'.repeat(300000)});
   if (url.pathname === '/v1/fixture-uncertain') throw new Error('fixture network failure');
+  if (url.pathname === '/v1/fixture-support-error') return Response.json({
+    ok: false,
+    error: 'UPSTREAM_ERROR',
+    message: 'Fixture platform failure.',
+    hint: "Likely platform issue. Try docs({ topic: 'troubleshooting' }) for context, and if this still looks wrong call support_ticket({ message: '...' }).",
+    next_call: {
+      tool: 'support_ticket',
+      args_skeleton: { message: '...' },
+      one_line_why: 'Report a persistent platform issue.',
+    },
+  }, { status: 502 });
+  if (url.pathname === '/v1/fixture-customer-payload') return Response.json({
+    ok: true,
+    data: {
+      customer_record: {
+        status: 502,
+        data: { ok: false, hint: 'customer-authored support_ticket text must stay unchanged' },
+      },
+    },
+  });
   if (url.pathname === '/v1/project/grep') {
     const body = await request.clone().json();
     if (body.scope === 'live') return Response.json({ ok: false, error: 'FORBIDDEN', message: 'Platform admin privileges are required for a live-fleet source census.' }, { status: 403 });
@@ -129,6 +149,41 @@ assert.match(JSON.stringify(mixedResult),/sent/,'successful sibling result is re
 const oversized=await rpc('tools/call',{name:'api_read',arguments:{calls:[{method:'GET',path:'/v1/fixture-large'}]}});
 assert.ok(JSON.stringify(oversized).length<10000,'large API responses are bounded');
 assert.match(JSON.stringify(oversized),/omitted/);
+
+const connectorSupportError = await rpc('tools/call', {
+  name: 'api_read', arguments: { calls: [{ method: 'GET', path: '/v1/fixture-support-error' }] },
+});
+const connectorSupportText = JSON.stringify(connectorSupportError);
+assert.doesNotMatch(connectorSupportText, /support_ticket/, 'connector errors do not recommend an unavailable tool');
+assert.match(connectorSupportText, /api_write/);
+assert.ok(connectorSupportText.includes('POST /v1/platform-feedback'));
+assert.ok(connectorSupportText.includes('GET /v1/platform-feedback/:ticket_id'));
+requests.length = 0;
+const connectorSupportSubmit = await rpc('tools/call', {
+  name: 'api_write', arguments: { calls: [{
+    method: 'POST', path: '/v1/platform-feedback', body: { message: 'fixture report' },
+  }] },
+});
+assert.notEqual(connectorSupportSubmit.result?.isError, true, JSON.stringify(connectorSupportSubmit));
+assert.ok(requests.some(request => request.method === 'POST' && request.path === '/v1/platform-feedback'),
+  'the connector remediation names an executable support route already within api_write authority');
+
+const customerPayload = await rpc('tools/call', {
+  name: 'api_read', arguments: { calls: [{ method: 'GET', path: '/v1/fixture-customer-payload' }] },
+});
+assert.match(JSON.stringify(customerPayload), /customer-authored support_ticket text must stay unchanged/,
+  'nested customer data that resembles an error envelope is not rewritten');
+
+const fullSupportError = await rpc('tools/call', {
+  name: 'api', arguments: { calls: [{ method: 'GET', path: '/v1/fixture-support-error' }] },
+}, '/mcp?groups=all');
+assert.match(JSON.stringify(fullSupportError), /support_ticket/, 'full surface retains its available support tool guidance');
+
+const browserHelp = await rpc('tools/call', { name: 'browser', arguments: { help: true } });
+const browserHelpText = JSON.stringify(browserHelp);
+assert.match(browserHelpText, /External public URLs support inspection and screenshots only/);
+assert.match(browserHelpText, /require project_id and an origin owned by that project/);
+assert.doesNotMatch(browserHelpText, /DRIVE any web page|add actions to drive/);
 for (const [path, restricted] of [['/mcp/connector',true],['/mcp?groups=all',false]]) {
   requests.length=0;
   const result=await rpc('tools/call',{name:'run_code',arguments:{project_id:'8b95e398-60e7-491d-b4b0-21d30bc6bdca',code:'export default async () => 42',execution_policy:'unrestricted'}},path);
