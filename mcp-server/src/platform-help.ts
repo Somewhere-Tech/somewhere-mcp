@@ -2533,7 +2533,7 @@ const open = await sw.postgres\`SELECT id FROM tickets WHERE owner_id = \${actor
 // Explicit text + parameters, as above.
 const rows = await sw.postgres.query('SELECT id FROM tickets WHERE owner_id = $1', [actor.id]);
 
-// Several statements in one transaction.
+// A fixed list of statements, applied atomically.
 const [a, b] = await sw.postgres.transaction([
   sw.postgres\`UPDATE accounts SET balance = balance - 10 WHERE id = \${from}\`,
   sw.postgres\`UPDATE accounts SET balance = balance + 10 WHERE id = \${to}\`,
@@ -2549,6 +2549,14 @@ statement selects with no error and no warning. If you are carrying a handler
 over from \`sw.db\`, the scope does not come with it. Put the restriction in
 the statement — a parameterized \`WHERE\` over the identity your own code
 verified — and check the caller's permission yourself.
+
+Statements travel over the driver's HTTP SQL path, and \`transaction\` takes a
+LIST of statements decided before the call — they are applied atomically, all
+or none. What is not available is an interactive transaction: you cannot open
+one, read a row, branch on it in JavaScript, and then commit or roll back on
+the next tick. If your logic needs that shape, express the decision inside the
+SQL — a conditional \`UPDATE\`, a \`CTE\`, a \`RETURNING\` you act on — rather than
+reaching for a session that is not there.
 
 A query resolves to an ARRAY OF ROWS. There is no \`{ data, error }\` envelope, no
 \`.data\` and no \`.rows\` to unwrap — those belong to \`sw.db\` and to other
@@ -2692,7 +2700,41 @@ Preview releases do not get the connection, and a preview must never be pointed
 at a production database. Treat preview work against attached PostgreSQL as
 unsupported for now.
 
-Related: \`sw.db\`, \`sw.auth\`, \`security-model\`, \`sql-compatibility\`.
+## Is it faster? Measure your workload
+
+Which is quicker depends on your data, your queries and where things sit, so
+the number worth having is yours. Two things to know before you start: we have
+published no managed-versus-attached benchmark, and our older
+raw-versus-composed figures compare two ways of reaching the MANAGED database,
+so they say nothing about PostgreSQL. Known limits that may decide it for you
+without a measurement: the managed database holds up to 10 GB per project,
+serializes writes within a project, and is not built for heavy analytical
+scans — if your workload lives there, attach PostgreSQL and move on.
+
+A comparison that means something:
+
+- **Isolated data, not production.** A copy you can hammer, with the same row
+  counts and the same INDEXES on both sides. A missing index is the most
+  common way one engine "wins".
+- **The same work.** Same payload, same statements, and the same permission
+  semantics — if the managed side scopes rows to the caller, the PostgreSQL
+  side needs that \`WHERE\` too, or you are timing two different questions.
+- **The same region on both sides**, because distance is a real term. A
+  function runs near the visitor by default, and near-data placement is
+  something you select; a Neon project's region is chosen when it is created
+  and defaults to Ohio. Nothing couples the two automatically — pick them
+  deliberately and say which you used.
+- **Cold and warm reported separately.** A first request into a fresh release
+  does one-time work the next one does not; mixing them hides both.
+- **p50 AND p95.** A median alone conceals the tail your users complain about.
+- **Serial versus batched**, and **write contention** if you have any. Several
+  statements awaited one after another behave nothing like the same statements
+  sent together, on either engine.
+
+Run it on the shape your app actually has, and let that decide.
+
+Related: \`sw.db\`, \`sw.auth\`, \`security-model\`, \`database-engine\`,
+\`sql-compatibility\`.
 `,
 
   'sw.fetch': `# sw.fetch — outbound HTTP fetch from a function
@@ -12573,6 +12615,46 @@ foreign keys, joins, indexes, transactions, triggers, JSON operators,
 full-text search, and math functions. Deployed functions normally use a
 native project binding; first-use activation, placement, transport, scheduling,
 and engine execution can all contribute to end-to-end latency.
+
+## Starting a new app? Start here
+
+Start with the managed project database. It comes with the parts of a data
+layer you would otherwise build and maintain yourself:
+
+- **Row permissions are declared once and enforced automatically.** A table
+  declares who may reach it, and every structured call carries that rule into
+  the statement — so the authorization plumbing that usually repeats in every
+  handler is written in one place and applied for you.
+- **A typed browser client, generated from that declaration.** The operations
+  you granted exist and are typed; the ones you did not are absent.
+- **The schema is context an agent can use.** \`db/schema.ts\` is a file it
+  reads and changes, so the thing building your app already knows the shape of
+  your data — no separate migration tool, no drift between what the code
+  believes and what the database holds.
+- **Nothing to operate.** No connection string to hold, no pool to size, no
+  migration runner, no second bill.
+
+Its SQL surface is deliberately narrower than PostgreSQL's, which is exactly
+when the other option earns its place.
+
+## When PostgreSQL is the right answer
+
+Reach for it when the reason is concrete, not aspirational:
+
+- **The data or the SQL already exists in Postgres.** Rewriting working
+  queries to prove a point is not a migration plan.
+- **You need something PostgreSQL has and this does not** — an extension,
+  a type, a behaviour you have already checked is missing here.
+- **Existing tooling and reporting are part of how you work**: a BI tool, a
+  dashboard, an analyst with psql.
+
+You do not have to leave to get it. A project can attach ONE external
+PostgreSQL database that you own — \`docs({ topic: 'postgres' })\` — on any
+plan including Free, billed to you by the provider. It is pass-through: no
+declared permissions, no generated client, none of the four bullets above.
+Many apps want the managed database; some want both; a few want only
+PostgreSQL. All three are reasonable, and none of them is the universal
+answer.
 
 ## What you get vs Postgres
 
