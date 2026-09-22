@@ -2533,7 +2533,8 @@ const open = await sw.postgres\`SELECT id FROM tickets WHERE owner_id = \${actor
 // Explicit text + parameters, as above.
 const rows = await sw.postgres.query('SELECT id FROM tickets WHERE owner_id = $1', [actor.id]);
 
-// A fixed list of statements, applied atomically.
+// A fixed list of statements, sent together and applied atomically.
+// This is also how you run several INDEPENDENT queries in ONE round trip:
 const [a, b] = await sw.postgres.transaction([
   sw.postgres\`UPDATE accounts SET balance = balance - 10 WHERE id = \${from}\`,
   sw.postgres\`UPDATE accounts SET balance = balance + 10 WHERE id = \${to}\`,
@@ -2552,11 +2553,21 @@ verified — and check the caller's permission yourself.
 
 Statements travel over the driver's HTTP SQL path, and \`transaction\` takes a
 LIST of statements decided before the call — they are applied atomically, all
-or none. What is not available is an interactive transaction: you cannot open
-one, read a row, branch on it in JavaScript, and then commit or roll back on
-the next tick. If your logic needs that shape, express the decision inside the
-SQL — a conditional \`UPDATE\`, a \`CTE\`, a \`RETURNING\` you act on — rather than
-reaching for a session that is not there.
+or none.
+
+That list is the answer to a second problem, and it is the one most handlers
+actually have: statements you \`await\` one after another each pay their own
+round trip, while a list handed over together pays one. So when a page needs
+several queries and none of them depends on another's result, put them in one
+\`transaction\` call rather than awaiting them in sequence — the atomicity is
+free, and the trips are what you were spending.
+
+What is not available is an INTERACTIVE transaction: you cannot open one, read
+a row, branch on it in JavaScript, and then commit or roll back on the next
+tick. The list has to be decided before the call. If your logic needs that
+shape, express the decision inside the SQL — a conditional \`UPDATE\`, a
+\`CTE\`, a \`RETURNING\` you act on — rather than reaching for a session that
+is not there.
 
 A query resolves to an ARRAY OF ROWS. There is no \`{ data, error }\` envelope, no
 \`.data\` and no \`.rows\` to unwrap — those belong to \`sw.db\` and to other
@@ -2700,6 +2711,42 @@ Preview releases do not get the connection, and a preview must never be pointed
 at a production database. Treat preview work against attached PostgreSQL as
 unsupported for now.
 
+## Where your functions run
+
+A project's functions run NEAR THE VISITOR by default, and reach across the
+network for each query. The alternative is \`near-data\`: it asks the platform
+to run them closer to the database where it judges that better, trading some
+distance from the visitor for proximity to the database. It is a preference
+the platform applies, not a pinned location, and it MAY reduce query
+latency. It is not guaranteed to. You choose it with \`project_update({
+project_id, placement: 'near-data' })\`, and \`near-user\` puts it back.
+
+Attaching a database makes that choice for you ONLY if you have never made it.
+On a project still running the untouched default, attaching selects
+\`near-data\`, because a query-heavy handler is usually better off
+closer to its database. A placement you set explicitly — either value — is left
+exactly as you set it, and disconnecting only undoes a choice the platform
+made: if the preference came from an attachment it returns to the untouched
+default, and if it came from you it stays. \`somewhere postgres status --json\`
+reports both under \`function_placement\`: the \`preference\`, and the \`provenance\` it
+came from. Ask for JSON, or read the status API response directly — the plain
+text listing does not include it.
+
+Four things worth knowing before you rely on it:
+
+- **It takes effect on your next production deploy**, like the connection
+  itself. A published version never changes underneath you.
+- **An AUTOMATIC preference does not move previews.** A preview does not
+  carry the attached connection, so a placement the attachment chose on your
+  behalf does not apply there. A \`near-data\` placement YOU set keeps its
+  existing behavior and applies to your functions as it did before — this
+  carve-out is about the choice the platform made, not about yours.
+- **Static files stay at the edge** either way. This is about where your
+  functions run, not where your site is served from.
+- **It is a preference, not a guarantee of geography.** The platform asks for
+  the placement; if it cannot be applied the deploy still succeeds, says so,
+  and the next deploy retries. Nothing here is a data-residency commitment.
+
 ## Is it faster? Measure your workload
 
 Which is quicker depends on your data, your queries and where things sit, so
@@ -2719,11 +2766,11 @@ A comparison that means something:
 - **The same work.** Same payload, same statements, and the same permission
   semantics — if the managed side scopes rows to the caller, the PostgreSQL
   side needs that \`WHERE\` too, or you are timing two different questions.
-- **The same region on both sides**, because distance is a real term. A
-  function runs near the visitor by default, and near-data placement is
-  something you select; a Neon project's region is chosen when it is created
-  and defaults to Ohio. Nothing couples the two automatically — pick them
-  deliberately and say which you used.
+- **The same region on both sides**, because distance is a real term. Say
+  which placement each side ran under — see above — and note the Neon
+  project's region, chosen when it is created and defaulting to Ohio. Placement
+  moves the function, not the database; measuring one while changing the other
+  tells you nothing.
 - **Cold and warm reported separately.** A first request into a fresh release
   does one-time work the next one does not; mixing them hides both.
 - **p50 AND p95.** A median alone conceals the tail your users complain about.
@@ -3868,16 +3915,62 @@ this response does not tell you whether the mail was delivered.
 ## MFA / TOTP
 
 RFC 6238 TOTP — Google Authenticator, 1Password, Authy all work. Once
-enrolled, the user's normal \`login\` returns \`{ mfa_required: true,
-mfa_token }\` instead of a session; complete the challenge with the
-6-digit code to get the session.
+enrolled, PASSWORD sign-in — \`login\` with an email and password — returns
+\`{ mfa_required: true, mfa_token }\` instead of a session; complete the
+challenge with the 6-digit code to get the session.
 
-  // Enrollment — pass the user's JWT.
-  const { secret, otpauth_uri } = await sw.auth.mfa.enroll({ token: jwt });
-  // Show otpauth_uri as a QR code; user scans it, types the first code.
-  const { backup_codes } = await sw.auth.mfa.verify({ token: jwt, code });
-  // backup_codes is returned ONCE on first verify — show it to the
-  // user now (null on re-verify; existing codes are preserved).
+**That is the scope of the challenge today: password login.** The other
+ways into an account — magic link, OAuth, passkey — do not challenge for a
+second factor, and enrolling a user does not change that. Closing the gap
+is tracked separately; until it lands, treat MFA as protecting the password
+path and nothing wider.
+
+Turning MFA ON takes more than the session you already have. A stolen JWT
+must not be enough to add a second factor to someone's account — that would
+lock the owner out with the attacker's authenticator. So activation needs
+FRESH proof, and enrollment happens in three steps.
+
+  // 1. Enroll. Returns the secret to show as a QR code, plus the
+  //    enrollment_id that the next two steps are bound to.
+  const { secret, otpauth_uri, enrollment_id } = await sw.auth.mfa.enroll({ token: jwt });
+
+  // 2. Prove it is really them, right now. Password accounts can use the
+  //    password; any account can use a code sent to the stored address.
+  const step = await sw.auth.mfa.reauthenticate({
+    token: jwt, enrollment_id, method: 'password', password,
+  });
+  // → { method: 'password', activation_token, expires_in_seconds }
+
+  //    Email instead: reauthenticate({ ..., method: 'email' }) sends a code
+  //    and returns { method: 'email', challenge_id, expires_in_seconds };
+  //    exchange it for the activation_token:
+  const emailStep = await sw.auth.mfa.verifyReauthentication({
+    token: jwt, enrollment_id, challenge_id, code: emailedCode,
+  });
+
+  // 3. Activate with the authenticator's code AND that authority.
+  const { backup_codes } = await sw.auth.mfa.verify({
+    token: jwt, enrollment_id, activation_token: step.activation_token, code,
+  });
+  // backup_codes: eight recovery codes, shown once. Capture them here.
+
+The activation token is one-time, expires in five minutes, and is bound to
+the project, the user, that live session AND that enrollment_id — a token
+minted for one enrollment cannot activate another, and re-enrolling
+invalidates the earlier one.
+
+**Activation signs everyone out, including the caller.** A successful verify
+enables MFA, rotates the recovery codes and revokes every session and refresh
+token for that user. Your app must send the user back through login
+afterwards; treat the JWT you just used as dead. This is deliberate — if the
+enrollment WAS an attacker, that is the moment their session stops working.
+
+Accounts with no password (magic link, OAuth, passkey) use
+\`method: 'email'\`; asking for a password they never set returns
+\`MFA_REAUTH_METHOD_UNAVAILABLE\`. Both reauthentication routes require an
+app-user JWT — a developer key is refused with \`UNSUPPORTED_FEATURE\` — and
+both are rate limited (\`RATE_LIMITED\`, 429). A stale or replaced enrollment
+answers \`AUTH_INVALID_CREDS\` (401).
 
   // On login, if MFA is enrolled:
   const login = await sw.auth.login({ email, password });
@@ -3893,8 +3986,16 @@ mfa_token }\` instead of a session; complete the challenge with the
   // JWT alone can't turn it off.
   await sw.auth.mfa.unenroll({ token: jwt, code });
 
-REST: POST /v1/auth/mfa/{enroll,verify,challenge,unenroll}
-MCP: auth_mfa_{enroll,verify,challenge,unenroll}
+REST: POST /v1/auth/mfa/{enroll,activation/reauth,activation/reauth/verify,verify,challenge,unenroll}
+MCP: auth_mfa_{enroll,activation_reauth,activation_reauth_verify,verify,challenge,unenroll}
+
+The two activation tools take the same fields as their routes plus
+\`app_token\` — the end user's JWT, which becomes the Authorization on the
+call.
+
+\`/mfa/challenge\` is unchanged and is NOT an app-user route: completing a
+login challenge stays a developer- or runtime-authorized call, so a browser
+cannot drive it directly.
 
 ## Update password (logged-in user)
 
@@ -3904,8 +4005,67 @@ MCP: auth_mfa_{enroll,verify,challenge,unenroll}
   });
 
 Wipes ALL active sessions and refresh tokens on success — the user has
-to log in again everywhere. For OAuth-only users setting their first
-password, omit \`current_password\`.
+to log in again everywhere.
+
+**A bearer token alone cannot set the FIRST password.** An account that
+has never had one — magic link, OAuth, passkey — is refused here with
+\`AUTH_PASSWORD_RESET_REQUIRED\` (403). Send that user through the existing
+\`/v1/auth/forgot\` and \`/v1/auth/reset\` pair instead, so the password is set
+against a code delivered to their current address rather than against a
+token someone may have stolen. On an account that already has a password,
+\`current_password\` is required (\`VALIDATION_ERROR\` without it, \`AUTH_INVALID_CREDS\`
+if it is wrong), and if the password changes underneath the call it answers
+\`AUTH_CREDENTIAL_CHANGED\` (409) rather than overwriting the newer one.
+
+## Change email (logged-in user)
+
+Changing an address proves TWO things: that the request comes from the
+account's present owner, and that the new address is real and reachable.
+Until both land, the old address stays live and signed in.
+
+  // 1. Start it. current_password is OPTIONAL and decides the first proof.
+  await sw.auth.updateProfile(jwt, { email: next, current_password });
+  // → { email_change: { id, pending: true, new_email,
+  //      phase: 'verify_current_email' | 'verify_new_email',
+  //      expires_in_seconds } }
+
+WITH a correct \`current_password\`, the first proof is done and the code goes
+straight to the NEW address (\`phase: 'verify_new_email'\`). WITHOUT it, the
+code goes to the CURRENT address first (\`phase: 'verify_current_email'\`) —
+that inbox is the proof instead. An account with no password that sends
+\`current_password\` anyway gets \`EMAIL_CHANGE_PASSWORD_UNAVAILABLE\` (400): take
+the current-inbox route.
+
+  // 2. Only on the current-email route. REST; there is no sw.auth helper.
+  //    POST /v1/auth/change-email/verify-current { change_id, code }
+  //    Succeeds, then immediately mails a fresh code to the NEW address.
+
+  // 3. Both routes finish here, with the code from the NEW address.
+  //    POST /v1/auth/change-email/verify { change_id, code }
+  //    → { changed: true, email }
+
+\`change_id\` is the \`email_change.id\` from step 1, and \`code\` is six digits. Both
+verify routes need the app-user JWT — a developer key is refused with
+\`UNSUPPORTED_FEATURE\` — and so does step 1.
+
+What the flow is pinned to, and what breaks it:
+
+- **The session that started it.** The change is bound to that project,
+  user, live session and token version. Sign out, get signed out, or change
+  the password mid-flow and the pending change stops being answerable.
+- **Fifteen minutes**, and five wrong codes on either leg, after which the
+  change is discarded and you start again (\`AUTH_INVALID_CREDS\`, 401).
+  Starting a new change replaces any change already pending.
+- **The address has to still be free.** If someone else takes it before you
+  finish, the final step answers \`AUTH_EMAIL_EXISTS\` (409).
+- **The old address keeps working throughout.** The write happens once, at
+  step 3; nothing is half-applied if the user abandons it.
+- **Send \`email\` on its own.** Combining it with \`display_name\` or \`metadata\`
+  in the same call is a \`VALIDATION_ERROR\` — the profile write is immediate
+  and this one is not, so they do not travel together.
+
+Completing the change marks the new address verified and invalidates
+outstanding magic links for that user. It does NOT sign the user out.
 
 ## Update profile (logged-in user)
 

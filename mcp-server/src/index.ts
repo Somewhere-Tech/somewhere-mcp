@@ -2078,7 +2078,7 @@ The response is a SUCCESS carrying the code and a machine-readable status, e.g. 
 \`\`\`json
 { "project_id": "p_abc123", "name": "Acme Portal v2", "description": "Updated customer portal" }
 \`\`\``,
-    inputSchema: { type: 'object', properties: { project_id: { type: 'string', description: 'Project ID' }, name: { type: 'string', description: 'New name' }, description: { type: 'string', description: 'New description (optional)' }, placement: { type: 'string', enum: ['near-user', 'near-data'], description: "Where this project's functions RUN. 'near-user' (the default) runs them closest to each visitor and reaches across the network to the database, so every query costs a round trip. 'near-data' runs them next to the database instead: one hop from the visitor, then near-free queries. Choose 'near-data' for query-heavy pages whose visitors are concentrated, or where a page issues reads it cannot batch; keep 'near-user' for anything latency-sensitive that barely touches the database. Takes effect on the next deploy, so an already-published version never changes underneath you." } }, required: ['project_id'] },
+    inputSchema: { type: 'object', properties: { project_id: { type: 'string', description: 'Project ID' }, name: { type: 'string', description: 'New name' }, description: { type: 'string', description: 'New description (optional)' }, placement: { type: 'string', enum: ['near-user', 'near-data'], description: "Where this project's functions RUN. 'near-user' (the default) runs them closest to each visitor and reaches across the network to the database, so every query costs a round trip. 'near-data' asks the platform to run them closer to the database where it judges that better, trading some distance from the visitor for proximity to the database; it is a preference the platform applies, not a pinned location, and it may reduce query latency but is not guaranteed to. Choose 'near-data' for query-heavy pages whose visitors are concentrated, or where a page issues reads it cannot batch; keep 'near-user' for anything latency-sensitive that barely touches the database. Takes effect on the next deploy, so an already-published version never changes underneath you." } }, required: ['project_id'] },
   },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     group: 'project',
@@ -2108,7 +2108,7 @@ The response is a SUCCESS carrying the code and a machine-readable status, e.g. 
 \`\`\`json
 { "project_id": "p_abc123", "placement": "near-data" }
 \`\`\``,
-    inputSchema: { type: 'object', properties: { project_id: { type: 'string', description: 'Project ID' }, name: { type: 'string', description: 'New name' }, description: { type: 'string', description: 'New description (optional)' }, placement: { type: 'string', enum: ['near-user', 'near-data'], description: "Where this project's functions RUN. 'near-user' (the default) runs them closest to each visitor and reaches across the network to the database, so every query costs a round trip. 'near-data' runs them next to the database instead: one hop from the visitor, then near-free queries. Choose 'near-data' for query-heavy pages whose visitors are concentrated, or where a page issues reads it cannot batch; keep 'near-user' for anything latency-sensitive that barely touches the database. Takes effect on the next deploy, so an already-published version never changes underneath you." } }, required: ['project_id'] },
+    inputSchema: { type: 'object', properties: { project_id: { type: 'string', description: 'Project ID' }, name: { type: 'string', description: 'New name' }, description: { type: 'string', description: 'New description (optional)' }, placement: { type: 'string', enum: ['near-user', 'near-data'], description: "Where this project's functions RUN. 'near-user' (the default) runs them closest to each visitor and reaches across the network to the database, so every query costs a round trip. 'near-data' asks the platform to run them closer to the database where it judges that better, trading some distance from the visitor for proximity to the database; it is a preference the platform applies, not a pinned location, and it may reduce query latency but is not guaranteed to. Choose 'near-data' for query-heavy pages whose visitors are concentrated, or where a page issues reads it cannot batch; keep 'near-user' for anything latency-sensitive that barely touches the database. Takes effect on the next deploy, so an already-published version never changes underneath you." } }, required: ['project_id'] },
   },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     group: 'project',
@@ -5786,9 +5786,9 @@ The link expires in 15 minutes and can only be used once. Token verification goe
   {
     definition: {
     name: 'auth_mfa_enroll',
-    description: `Start TOTP enrolment for the logged-in end user. Returns \`{ secret, otpauth_uri, issuer, account }\` — render \`otpauth_uri\` as a QR code so the user can scan it with Google Authenticator / Authy / 1Password.
+    description: `Start TOTP enrolment for the logged-in end user. Returns \`{ secret, enrollment_id, otpauth_uri, issuer, account }\` — render \`otpauth_uri\` as a QR code so the user can scan it with Google Authenticator / Authy / 1Password.
 
-The secret is stored on the user row immediately, but \`mfa_enabled\` stays 0 until the user confirms with \`auth_mfa_verify\`. That way a closed tab mid-enrol can't lock anyone out.
+The enrollment remains inactive until the user proves recent account authority and confirms the authenticator code. Call \`auth_mfa_activation_reauth\` with the returned \`enrollment_id\`; the password method returns an \`activation_token\`, while the email method returns a \`challenge_id\` for \`auth_mfa_activation_reauth_verify\`. Then call \`auth_mfa_verify\` with the enrollment, activation token, and authenticator code.
 
 Returns 409 ALREADY_ENROLLED if the user already has MFA on — call \`auth_mfa_unenroll\` first.`,
     inputSchema: {
@@ -5827,17 +5827,108 @@ Returns 409 ALREADY_ENROLLED if the user already has MFA on — call \`auth_mfa_
   },
   {
     definition: {
-    name: 'auth_mfa_verify',
-    description: `Confirm a pending TOTP enrolment by submitting the first 6-digit code from the authenticator app. On first success flips \`mfa_enabled\` to 1 and returns 8 single-use \`backup_codes\` — surface them once; they will not be returned again.
+    name: 'auth_mfa_activation_reauth',
+    description: `Establish recent authority for one exact pending MFA enrollment. Use \`method: "password"\` with the user's current \`password\` to receive a short-lived one-time \`activation_token\`. Use \`method: "email"\` to send a 6-digit code to the account's current stored email and receive a \`challenge_id\`; exchange that code through \`auth_mfa_activation_reauth_verify\`.
 
-On a re-verify (user already had MFA on), \`backup_codes\` is null and existing codes are preserved.`,
+The proof and activation are bound to the supplied \`app_token\` session and the exact pending enrollment. \`password\` is required only for the password method; email requests carry no password.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        app_token: { type: 'string', description: 'App-user JWT for the current session activating MFA' },
+        enrollment_id: { type: 'string', description: 'Pending enrollment ID returned by auth_mfa_enroll' },
+        method: { type: 'string', enum: ['password', 'email'], description: 'Fresh-authority method: password or email' },
+        password: { type: 'string', description: 'Current password — required when method is password; omit when method is email' },
+      },
+      required: ['app_token', 'enrollment_id', 'method'],
+    },
+  },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    group: 'auth',
+    core: false,
+    visibility: 'authenticated',
+    paid: false,
+    surfaces: ["full"],
+    execute: async (runtime, args) => {
+      const { fetcher } = runtime;
+      let result: ToolUpstreamResult;
+      {
+        const body: Record<string, unknown> = {
+          enrollment_id: args.enrollment_id,
+          method: args.method,
+        };
+        if (args.method === 'password') body.password = args.password;
+        const headers = new Headers({
+          'Authorization': 'Bearer ' + (args.app_token as string),
+          'Content-Type': 'application/json',
+        });
+        const req = new Request('https://api-internal/v1/auth/mfa/activation/reauth', {
+          method: 'POST', headers, body: JSON.stringify(body),
+        });
+        const resp = await fetcher.fetch(req);
+        result = { status: resp.status, data: await resp.json() };
+        return result;
+
+      }
+    },
+  },
+  {
+    definition: {
+    name: 'auth_mfa_activation_reauth_verify',
+    description: `Exchange the 6-digit code sent by \`auth_mfa_activation_reauth\` with \`method: "email"\` for a short-lived one-time \`activation_token\`. The challenge, enrollment, app user, and current app session must still match, and incorrect attempts and expiry are bounded.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        app_token: { type: 'string', description: 'App-user JWT for the current session activating MFA' },
+        enrollment_id: { type: 'string', description: 'Pending enrollment ID returned by auth_mfa_enroll' },
+        challenge_id: { type: 'string', description: 'Email challenge ID returned by auth_mfa_activation_reauth' },
+        code: { type: 'string', description: '6-digit code sent to the account current email' },
+      },
+      required: ['app_token', 'enrollment_id', 'challenge_id', 'code'],
+    },
+  },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    group: 'auth',
+    core: false,
+    visibility: 'authenticated',
+    paid: false,
+    surfaces: ["full"],
+    execute: async (runtime, args) => {
+      const { fetcher } = runtime;
+      let result: ToolUpstreamResult;
+      {
+        const headers = new Headers({
+          'Authorization': 'Bearer ' + (args.app_token as string),
+          'Content-Type': 'application/json',
+        });
+        const req = new Request('https://api-internal/v1/auth/mfa/activation/reauth/verify', {
+          method: 'POST', headers, body: JSON.stringify({
+            enrollment_id: args.enrollment_id,
+            challenge_id: args.challenge_id,
+            code: args.code,
+          }),
+        });
+        const resp = await fetcher.fetch(req);
+        result = { status: resp.status, data: await resp.json() };
+        return result;
+
+      }
+    },
+  },
+  {
+    definition: {
+    name: 'auth_mfa_verify',
+    description: `Activate one exact pending TOTP enrollment by submitting its \`enrollment_id\`, the short-lived one-time \`activation_token\` obtained from fresh password or stored-email proof, and the first 6-digit code from the authenticator app.
+
+The single successful activation returns \`{ enabled: true, backup_codes: [...] }\` with 8 single-use backup codes and atomically revokes every existing app session and refresh token for that user, including the session represented by \`app_token\`. Surface the backup codes once, discard the now-revoked token, and require a fresh sign-in with MFA. Stale or replayed activation authority is refused.`,
     inputSchema: {
       type: 'object',
       properties: {
         app_token: { type: 'string', description: 'App-user JWT for the user verifying' },
+        enrollment_id: { type: 'string', description: 'Pending enrollment ID returned by auth_mfa_enroll' },
+        activation_token: { type: 'string', description: 'Short-lived one-time token returned after fresh password or stored-email proof' },
         code: { type: 'string', description: '6-digit code from the authenticator app' },
       },
-      required: ['app_token', 'code'],
+      required: ['app_token', 'enrollment_id', 'activation_token', 'code'],
     },
   },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
@@ -5855,7 +5946,11 @@ On a re-verify (user already had MFA on), \`backup_codes\` is null and existing 
           'Content-Type': 'application/json',
         });
         const req = new Request('https://api-internal/v1/auth/mfa/verify', {
-          method: 'POST', headers, body: JSON.stringify({ code: args.code }),
+          method: 'POST', headers, body: JSON.stringify({
+            enrollment_id: args.enrollment_id,
+            activation_token: args.activation_token,
+            code: args.code,
+          }),
         });
         const resp = await fetcher.fetch(req);
         result = { status: resp.status, data: await resp.json() };
