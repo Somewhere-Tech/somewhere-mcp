@@ -147,11 +147,11 @@ interface Env {
 const MCP_INITIALIZE_INSTRUCTION_LINES = [
   'somewhere.tech MCP exposes platform primitives; `docs({ topic })` provides the exact auth, database, payments, files, and runtime contracts.',
   'Functions are `export default async function (req, sw)`; `sw.*` are runtime bindings, not HTTP calls.',
-  'Inside functions use `sw.db`, `sw.auth`, `sw.fs`, `sw.email`, `sw.ai`, `sw.payments`; do not call platform HTTP endpoints with a developer key.',
-  'Database/query row results live in `data`; do not use `.rows` or `.results`.',
-  'Client SDK calls use the familiar `{ data, error }` shape.',
-  'Deploy raw source (`src/`, `index.html`, `package.json`, `api/`); the platform compiles it.',
-  'Never run `npm run build`, `vite build`, or deploy `dist/` / `build/` unless explicitly using a bundled-output escape hatch.',
+  'Runtime functions access database, auth, files, email, AI, and payments through `sw.*`; developer keys authorize management surfaces and are not function-runtime HTTP credentials.',
+  'Database/query row results are exposed in `data`; `.rows` and `.results` are not result fields.',
+  'Client SDK calls return the familiar `{ data, error }` shape.',
+  'Deployments accept raw source (`src/`, `index.html`, `package.json`, `api/`), which the platform compiles.',
+  'Bundled `dist/` / `build/` output and local build steps are outside the standard deployment contract; only an explicit bundled-output escape hatch accepts them.',
   '`catalog` is the caller-visible tool index.',
   '`advisor({ question })` can inspect an authorized live project and answer architecture questions.',
   '`docs({ topic: \'migration-supabase\' })` documents Supabase migration; bcrypt password hashes import directly.',
@@ -1001,7 +1001,7 @@ const DATABASE_TARGET_INPUT_PROPERTIES = {
   preview: { type: 'boolean', description: 'Explicit preview target flag. Cannot be combined with a production target.' },
   draft: { type: 'boolean', description: 'Legacy alias for the preview target flag.' },
   production: { type: 'boolean', description: 'Explicit production target flag. Cannot be combined with a preview target.' },
-  preview_session_id: { type: 'string', description: 'Open preview session id whose isolated database should be used.' },
+  preview_session_id: { type: 'string', description: "Identifier for an active preview session's isolated database." },
   preview_id: { type: 'string', description: 'Optional expected preview candidate release id.' },
   draft_id: { type: 'string', description: 'Legacy alias for preview_session_id.' },
   candidate_release_id: { type: 'string', description: 'Legacy alias for preview_id.' },
@@ -1116,8 +1116,8 @@ For admin/operator callers the same response also includes every registered plai
     inputSchema: {
       type: 'object',
       properties: {
-        search: { type: 'string', description: "Optional. Keyword or exact tool-name search across every tool available to this caller on the active surface (e.g. 'auth_signup', 'upload url', 'rollback'). Returns matching tools + their group + how to load each. Use this when you know the capability you want but the default tool-search didn't surface it." },
-        load: { type: 'string', description: "Optional. Load full tool definitions for a group ('db', 'auth', …), a comma-separated list ('db,fs'), or 'all'. Omit to get the group index (names + summaries only)." },
+        search: { type: 'string', description: "Optional keyword or exact tool-name search across every tool available to the caller on the active surface (e.g. 'auth_signup', 'upload url', 'rollback'). The result contains matching tools, their groups, and loading details; it covers capabilities absent from default tool search." },
+        load: { type: 'string', description: "Optional full-definition selector for one group ('db', 'auth', …), a comma-separated list ('db,fs'), or 'all'. An omitted value returns the group index with names and summaries only." },
         project_id: { type: 'string', description: "Optional project UUID, subdomain, slug, or 'default'. When supplied, the response also lists active runtime-fix notices for that project." },
       },
       required: [],
@@ -1554,14 +1554,14 @@ Shared projects: you can deploy, edit files, run db migrations, send email, and 
     inputSchema: {
       type: 'object',
       properties: {
-        q: { type: 'string', description: 'Optional substring filter matched against project name and subdomain — use it to find a specific project instead of paging the whole list.' },
+        q: { type: 'string', description: 'Optional substring filter matched against project name and subdomain for locating a specific project without paging the whole list.' },
         tag: {
           oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
-          description: 'Optional organization-tag filter. Tags normalize to lowercase letters, digits, and hyphens. Pass one tag or an array; arrays use AND semantics.',
+          description: 'Optional organization-tag filter. Tags normalize to lowercase letters, digits, and hyphens. One tag or an array is accepted; arrays use AND semantics.',
         },
-        limit: { type: 'number', description: 'Max rows to return (default 50). The list is compact and paginated so an agent gets a small payload; raise it or use `offset` to page when you own many projects.' },
-        offset: { type: 'number', description: 'Row offset for paging (default 0). Combine with `limit` to walk a long list; the response note reports the total count.' },
-        fields: { type: 'string', enum: ['compact', 'full'], description: 'Response shape. "compact" (default) returns identity, status, tags, render-ready asset URLs, deploy time, and ownership. "full" adds the complete project record — heavier; request it only when you need the extra fields.' },
+        limit: { type: 'number', description: 'Maximum rows to return (default 50). The compact list is paginated; larger limits or `offset` cover accounts with many projects.' },
+        offset: { type: 'number', description: 'Row offset for paging (default 0). Together with `limit`, it traverses a long list; the response note reports the total count.' },
+        fields: { type: 'string', enum: ['compact', 'full'], description: 'Response shape. "compact" (default) returns identity, status, tags, render-ready asset URLs, deploy time, and ownership. "full" adds the heavier complete project record.' },
       },
       required: [],
     },
@@ -2195,7 +2195,7 @@ The default workflow has one environment: read production source, check, deploy 
           type: ['object', 'array'],
           additionalProperties: { type: 'string' },
           items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] },
-          description: 'Map of STATIC file paths to content, e.g. {"index.html": "<html>..."}. A native object is preferred; an array of {path, content} is also accepted. Static assets only — HTML, CSS, client-side JS, etc. Handler code (api/*, _lib/*, root [id].ts routes) does NOT belong here; it goes in `functions` so it routes. (A handler-shaped path found here is auto-routed into `functions` with a loud warning, but place it in `functions` directly.) Object value preferred; a JSON-stringified object is also accepted. Required for a full deploy; may be omitted with scope:\'functions\' when only functions are supplied.',
+          description: 'Map of STATIC file paths to content, e.g. {"index.html": "<html>..."}. A native object or an array of {path, content} is accepted. Static assets include HTML, CSS, and client-side JS. Handler code (api/*, _lib/*, root [id].ts routes) belongs in `functions` for routing; a handler-shaped path here is auto-routed with a warning. Full deploys require this field; scope:\'functions\' may omit it when only functions are supplied.',
         },
         functions: {
           type: ['object', 'array'],
@@ -2206,26 +2206,26 @@ The default workflow has one environment: read production source, check, deploy 
         binary_files: {
           type: 'object',
           additionalProperties: { type: 'string' },
-          description: 'Optional map of binary asset paths to base64 content. Include the complete map when creating an exact preview snapshot.',
+          description: 'Optional map of binary asset paths to base64 content. Exact preview snapshots require the complete map.',
         },
         file_refs: {
           type: 'object',
           additionalProperties: { type: 'string' },
-          description: 'Optional. Map of deploy path → project file-storage path for TEXT files you would otherwise inline, e.g. {"index.html": "/staged/index.html"}. The platform reads the referenced content from file storage server-side at deploy time, so a large tree ships without a giant inline payload. Write the source with `fs_write` first. Mixable with inline `files`. Object value preferred; a JSON-stringified object is also accepted.',
+          description: 'Optional map of deploy path → project file-storage path for TEXT files otherwise supplied inline, e.g. {"index.html": "/staged/index.html"}. The platform reads referenced content from file storage at deploy time, so a large tree avoids a giant inline payload. Referenced source must already exist through `fs_write`. Inline `files` may be mixed in.',
         },
         binary_file_refs: {
           type: 'object',
           additionalProperties: { type: 'string' },
-          description: 'Optional. Same as `file_refs` but for BINARY assets (images, fonts, other non-text), e.g. {"public/logo.png": "/uploads/logo.png"} — never base64 a binary into `files`. The platform resolves the referenced bytes from file storage at deploy time. Object value preferred; a JSON-stringified object is also accepted.',
+          description: 'Optional binary counterpart to `file_refs` for images, fonts, and other non-text assets, e.g. {"public/logo.png": "/uploads/logo.png"}. Binary data is referenced from file storage rather than base64-encoded in `files`.',
         },
-        replace_functions: { type: 'boolean', description: 'Optional. When true, the `functions` map is AUTHORITATIVE: any function live in the project but NOT in this payload is DELETED (its route 404s after). Default false = merge-preserve — omitted functions are KEPT, so a full deploy from a partial source tree cannot silently drop a function added via project_patch. Set true when you deliberately want to remove functions you no longer ship.' },
-        expected_version: { oneOf: [{ type: 'number' }, { type: 'string', enum: ['latest'] }], description: 'Optional optimistic-concurrency check. Accepts a `number` (strict CAS — returns 409 VERSION_CONFLICT if the production version differs) or the string `"latest"` (or omit entirely — auto-resolves to current version, no check). Default is omitted = auto-resolve. Use the strict numeric form only on collaborated projects where you want to detect concurrent deploys.' },
-        base_version: { type: 'number', description: 'Optional stale-base guard. Pass the version from your last deploy/export response. A 409 STALE_BASE means the project changed elsewhere — call project_diff_versions before forcing.' },
+        replace_functions: { type: 'boolean', description: 'Optional authoritative-function flag. When true, functions absent from the payload are deleted; false (default) merge-preserves omitted functions. The true value is for intentional removal of functions no longer shipped.' },
+        expected_version: { oneOf: [{ type: 'number' }, { type: 'string', enum: ['latest'] }], description: 'Optional optimistic-concurrency check. A number provides strict CAS and returns 409 VERSION_CONFLICT when production differs. "latest" or omission auto-resolves the current version without a check. The strict numeric form detects concurrent deploys on collaborated projects.' },
+        base_version: { type: 'number', description: 'Optional stale-base guard containing the version from the preceding deploy or export response. A 409 STALE_BASE indicates a remote project change and requires reviewing project_diff_versions before a forced retry.' },
         base_release_id: { type: 'string', description: 'Production release source anchor for an exact preview snapshot. Required when expected_preview_id is null. This field is part of the advertised exact-preview schema.' },
-        force: { type: 'boolean', description: 'Optional. Bypasses a STALE_BASE refusal after you have reviewed the remote changes. Do not use on the first retry; call project_diff_versions first.' },
-        dry_run: { type: 'boolean', description: 'Optional. When true, compute the diff (added / modified / removed file lists, function diff, version conflict) and return it WITHOUT writing anything. Use before a real deploy to catch "I am deploying from the wrong directory" mistakes — surfaces every file that would be deleted so an empty / stale source tree can\'t silently wipe production. Response shape: { dry_run: true, static_files: { added, modified, removed, *_count }, functions: { added, removed, modified } | null, warnings: string[], version_conflict: boolean }.' },
-        scope: { type: 'string', enum: ['all', 'functions', 'static'], description: 'Optional partial-deploy guard. "all" (default) deploys static + functions. "functions" deploys ONLY functions and leaves static untouched — use it for a backend-only deploy so it can never wipe the frontend. "static" is the inverse (only static, functions untouched). Omitted functions are still merge-preserved by default regardless of scope.' },
-        preview: { type: 'boolean', description: 'Advanced — `somewhere preview` only. Requires a Pro or Scale plan plus explicit platform enablement; otherwise returns CLOUD_DEV_NOT_ENABLED before creating resources. Default false: deploy directly to production. Do not set this unless the user says preview is enabled.' },
+        force: { type: 'boolean', description: 'Optional bypass for a STALE_BASE refusal after remote changes have been reviewed. A first retry is expected to inspect project_diff_versions instead.' },
+        dry_run: { type: 'boolean', description: 'Optional non-writing diff of added, modified, and removed files, function changes, and version conflict. It exposes every deletion before a real deploy and returns { dry_run, static_files, functions, warnings, version_conflict }.' },
+        scope: { type: 'string', enum: ['all', 'functions', 'static'], description: 'Optional partial-deploy guard. "all" (default) deploys static files and functions. "functions" leaves static files untouched; "static" leaves functions untouched. Omitted functions remain merge-preserved by default.' },
+        preview: { type: 'boolean', description: 'Advanced `somewhere preview` flag requiring a Pro or Scale plan plus explicit platform enablement; otherwise CLOUD_DEV_NOT_ENABLED is returned before resource creation. False (default) deploys directly to production.' },
         preview_session_id: { type: 'string', description: 'Stable editing-session id for this preview lineage. Required with preview:true.' },
         preview_operation_id: { type: 'string', description: 'Stable idempotency id for this exact preview build/retry.' },
         expected_preview_id: { type: ['string', 'null'], description: 'Exact current preview id, or null for the first preview.' },
@@ -2481,9 +2481,9 @@ Patches reach production immediately at \`https://{subdomain}.somewhere.site\`. 
       properties: {
         project_id: { type: 'string', description: "Project ID (UUID), subdomain, or slug — resolved server-side, no UUID lookup needed. 'default' also works when the account has exactly one project; multi-project accounts must name one (the error lists them)." },
         path: { type: 'string', description: 'File path relative to project root (e.g. "api/hello.ts" or "index.html"). Required for both content and find/replace modes.' },
-        content: { type: 'string', description: 'Full file content. Pair with `path`. Replaces the file entirely. Use this when you are rewriting most of the file; use `find`/`replace` for small edits.' },
-        find: { type: 'string', description: 'Find/replace mode: exact substring to match in the deployed file. Pair with `path` and `replace`. All occurrences are replaced. Mutually exclusive with `content`.' },
-        replace: { type: 'string', description: 'Find/replace mode: substring to substitute. Pair with `path` and `find`.' },
+        content: { type: 'string', description: 'Full file content paired with `path`; it replaces the file entirely. `find` and `replace` provide the smaller-edit alternative.' },
+        find: { type: 'string', description: 'Find/replace mode exact substring, paired with `path` and `replace`. All occurrences are replaced. Mutually exclusive with `content`.' },
+        replace: { type: 'string', description: 'Find/replace substitution paired with `path` and `find`.' },
         delete_files: {
           type: 'array',
           items: { type: 'string' },
@@ -2493,14 +2493,14 @@ Patches reach production immediately at \`https://{subdomain}.somewhere.site\`. 
           type: ['object', 'array'],
           additionalProperties: { type: 'string' },
           items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] },
-          description: 'Forgiving single-file alias. If you pass exactly one {"path": "content"} entry (or one {path, content} item), MCP converts it to path+content. It may be combined with delete_files for one atomic add-and-remove transaction. Multiple entries are rejected with an example; use project_deploy for a full replacement tree or call project_patch once per file.',
+          description: 'Forgiving single-file alias. Exactly one {"path": "content"} entry or one {path, content} item is converted to path+content and may accompany delete_files in one atomic transaction. Multiple entries are rejected; full replacement trees use project_deploy, while individual files use separate project_patch calls.',
         },
-        expected_version: { type: 'number', description: 'Optional optimistic-concurrency check. Set to the `version` from your last deploy/patch response. If another deployer changed the project since, returns 409 VERSION_CONFLICT with `data.current_version` instead of overwriting.' },
-        base_version: { type: 'number', description: 'Optional stale-base guard. Pass the version from your last deploy/export response. A 409 STALE_BASE means the project changed elsewhere — call project_diff_versions before forcing.' },
-        base_release_id: { type: 'string', description: 'Required for a project with a production release. Pass the `active_release_id` returned by the same project read/export that supplied the source you edited. A missing base fails closed; a stale base returns STALE_RELEASE_BASE without applying the patch.' },
-        force: { type: 'boolean', description: 'Optional. Bypasses a STALE_BASE refusal after you have reviewed the remote changes. Do not use on the first retry; call project_diff_versions first.' },
-        dry_run: { type: 'boolean', description: 'Preview without writing: returns per-file unified diffs of what the patch WOULD change (`data.diffs`) plus added/modified/removed lists. Nothing is written, the version does not change. Re-send without dry_run to apply.' },
-        preview: { type: 'boolean', description: "Advanced — `somewhere preview` only. Requires a Pro or Scale plan plus explicit platform enablement; otherwise returns CLOUD_DEV_NOT_ENABLED before creating resources. Default false: patch production. Do not set this unless the user says preview is enabled." },
+        expected_version: { type: 'number', description: 'Optional optimistic-concurrency version from the preceding deploy or patch response. A concurrent project change returns 409 VERSION_CONFLICT with `data.current_version` instead of overwriting.' },
+        base_version: { type: 'number', description: 'Optional stale-base version from the preceding deploy or export response. A 409 STALE_BASE indicates a remote change and requires reviewing project_diff_versions before a forced retry.' },
+        base_release_id: { type: 'string', description: 'Required for a project with a production release. It is the `active_release_id` from the same project read or export that supplied the edited source. A missing base fails closed; a stale base returns STALE_RELEASE_BASE without applying the patch.' },
+        force: { type: 'boolean', description: 'Optional bypass for a STALE_BASE refusal after remote changes have been reviewed. A first retry is expected to inspect project_diff_versions instead.' },
+        dry_run: { type: 'boolean', description: 'Non-writing preview that returns per-file unified diffs plus added, modified, and removed lists. The version stays unchanged; a subsequent call without dry_run applies the patch.' },
+        preview: { type: 'boolean', description: "Advanced `somewhere preview` flag requiring a Pro or Scale plan plus explicit platform enablement; otherwise CLOUD_DEV_NOT_ENABLED is returned before resource creation. False (default) patches production." },
         preview_session_id: { type: 'string', description: 'Stable editing-session id for this preview lineage. Required with preview:true.' },
         preview_operation_id: { type: 'string', description: 'Stable idempotency id for this exact preview build/retry.' },
         expected_preview_id: { type: ['string', 'null'], description: 'Exact current preview id, or null for the first preview.' },
@@ -2890,9 +2890,9 @@ To undo a promote, use \`project_rollback\`.`,
       type: 'object',
       properties: {
         project_id: { type: 'string', description: "Project ID, subdomain, or 'default'." },
-        with_schema: { type: 'boolean', description: 'Also roll the managed database schema back to the previous version (through the normal deploy path). Default false — the code rolls back and a schema plan is shown, but the schema is left unchanged until you confirm.' },
-        preview: { type: 'boolean', description: 'Preview only — change nothing. Returns the schema plan and target_version (the version this would restore). Default false. Use this to review, then confirm with expected_target_version.' },
-        expected_target_version: { type: 'number', description: 'The target_version you reviewed (from a preview). The rollback is refused with ROLLBACK_TARGET_CHANGED if the current rollback target differs — so a confirm never applies to a different version than the one reviewed.' },
+        with_schema: { type: 'boolean', description: 'Also rolls the managed database schema back through the normal deploy path. False (default) rolls back code and shows a schema plan while leaving the schema unchanged pending confirmation.' },
+        preview: { type: 'boolean', description: 'Non-writing preview that returns the schema plan and target_version. False is the default; the returned target_version is the confirmation value for expected_target_version.' },
+        expected_target_version: { type: 'number', description: 'The target_version returned by a preview. ROLLBACK_TARGET_CHANGED refuses a rollback when the current target differs, preventing confirmation from applying to another version.' },
       },
       required: ['project_id'],
     },
@@ -3357,7 +3357,7 @@ If you only need one file (e.g. just CSS), use \`project_file_read\`. If you onl
     inputSchema: {
       type: 'object',
       properties: {
-        preview_session_id: { type: 'string', description: 'Exact open preview session. Supply with preview_id and env:"dev"; never falls back to another source.' },
+        preview_session_id: { type: 'string', description: 'Exact open preview session paired with preview_id and env:"dev". It does not fall back to another source.' },
         preview_id: { type: 'string', description: 'Exact current candidate of preview_session_id. Both fields are required together.' },
         project_id: { type: 'string', description: "Project ID, slug, subdomain, or 'default'." },
         env: { type: 'string', enum: ['dev', 'prod'], description: 'Which environment to pull from. Defaults to "prod" (the live deployed source). Explicit "dev" requires the optional Pro/Scale + enabled preview capability.' },
@@ -3447,7 +3447,7 @@ Pair with \`project_file_read\` for surgical one-file pulls, or \`project_export
     inputSchema: {
       type: 'object',
       properties: {
-        preview_session_id: { type: 'string', description: 'Exact open preview session. Supply with preview_id and env:"dev"; never falls back to another source.' },
+        preview_session_id: { type: 'string', description: 'Exact open preview session paired with preview_id and env:"dev". It does not fall back to another source.' },
         preview_id: { type: 'string', description: 'Exact current candidate of preview_session_id. Both fields are required together.' },
         project_id: { type: 'string', description: "Project ID, slug, subdomain, or 'default'." },
         env: { type: 'string', enum: ['dev', 'prod'], description: 'Which environment to list. Defaults to "prod" (live). Explicit "dev" requires the optional Pro/Scale + enabled preview capability.' },
@@ -3523,7 +3523,7 @@ Pair with \`project_files_list\` to discover available paths, or use \`project_e
     inputSchema: {
       type: 'object',
       properties: {
-        preview_session_id: { type: 'string', description: 'Exact open preview session. Supply with preview_id and env:"dev"; never falls back to another source.' },
+        preview_session_id: { type: 'string', description: 'Exact open preview session paired with preview_id and env:"dev". It does not fall back to another source.' },
         preview_id: { type: 'string', description: 'Exact current candidate of preview_session_id. Both fields are required together.' },
         project_id: { type: 'string', description: "Project ID, slug, subdomain, or 'default'." },
         path: { type: 'string', description: 'File path relative to the project root (e.g. "index.html", "api/checkout.mjs", "assets/hero.jpg").' },
@@ -3578,7 +3578,7 @@ Returns at most \`max_results\` matches (default 100, max 1000), capped per file
     inputSchema: {
       type: 'object',
       properties: {
-        preview_session_id: { type: 'string', description: 'Exact open preview session. Supply with preview_id and env:"dev"; never falls back to another source.' },
+        preview_session_id: { type: 'string', description: 'Exact open preview session paired with preview_id and env:"dev". It does not fall back to another source.' },
         preview_id: { type: 'string', description: 'Exact current candidate of preview_session_id. Both fields are required together.' },
         project_id: { type: 'string', description: "Project ID, slug, subdomain, or 'default'." },
         scope: { type: 'string', enum: ['live'], description: 'Admin-only. Search every live project instead of one project; omit project_id.' },
@@ -4242,7 +4242,7 @@ Preferred: call \`github_app_install\` if needed, choose an ID from \`github_ins
       type: 'object',
       properties: {
         project_id: { type: 'string', description: "Project ID (UUID), subdomain, or slug — resolved server-side, no UUID lookup needed. 'default' also works when the account has exactly one project; multi-project accounts must name one (the error lists them)." },
-        table: { type: 'string', description: 'Optional table name. Omit to list all tables.' },
+        table: { type: 'string', description: 'Optional table name; an omitted value lists all tables.' },
       },
       required: ['project_id'],
     },
@@ -4307,8 +4307,8 @@ The database has a 30-second hard query ceiling. \`timeout_ms\` bounds how long 
       type: 'object',
       properties: {
         project_id: { type: 'string', description: "Project ID (UUID), subdomain, or slug — resolved server-side, no UUID lookup needed. 'default' also works when the account has exactly one project; multi-project accounts must name one (the error lists them)." },
-        sql: { type: 'string', description: 'SQL to execute. Use ? placeholders + params for user input (never string-concatenate).' },
-        params: { type: ['array', 'string'], description: 'Bind parameters for ? placeholders. Prefer a native JSON array, e.g. ["alice@example.com", 42]. A JSON-stringified array is also accepted. Omit when there are no placeholders.' },
+        sql: { type: 'string', description: 'SQL to execute. User input is represented by bound ? placeholders with params rather than string concatenation.' },
+        params: { type: ['array', 'string'], description: 'Bind parameters for ? placeholders. A native JSON array such as ["alice@example.com", 42] is preferred; a JSON-stringified array is also accepted. The field is optional when no placeholders exist.' },
         timeout_ms: { type: 'number', description: 'Stop waiting after N ms. Default 30000. Clamped to [1, 30000]. Returns QUERY_TIMEOUT; already-accepted database work may continue up to the hard ceiling.' },
         ...DATABASE_TARGET_INPUT_PROPERTIES,
       },
@@ -6245,7 +6245,7 @@ There are two file surfaces: deployed source is read with \`project_files_list\`
         path: { type: 'string', description: 'Full path with leading slash, e.g. "/images/avatar.png"' },
         content: { type: 'string', description: 'File content — UTF-8 text or base64 bytes (set content_type to match).' },
         content_type: { type: 'string', description: 'MIME type, e.g. "image/png", "application/pdf". Defaults to application/octet-stream.' },
-        public: { type: 'boolean', description: 'Serve this file at a public /storage URL (no auth). Default false — files are private. Set true for images/assets you embed in your app.' },
+        public: { type: 'boolean', description: 'Public /storage URL exposure without auth. False (default) keeps files private; true supports images and assets embedded in an application.' },
       },
       required: ['project_id', 'path', 'content'],
     },
@@ -6329,14 +6329,14 @@ There are two file surfaces: deployed source is read with \`project_files_list\`
   {
     definition: {
     name: 'fs_upload',
-    description: `**fs_upload = files. fs_write = text and small inline content.** Upload an image, PDF, video, zip, font, large artifact, or attachment without putting binary bytes or base64 in model context.
+    description: `**fs_upload = files. fs_write = text and small inline content.** Uploads an image, PDF, video, zip, font, large artifact, or attachment without placing binary bytes or base64 in conversational context.
 
 **Client capability matrix:**
-- **ChatGPT:** \`file\` is a native connector file parameter. ChatGPT supplies a temporary authorized file reference and this tool streams it through the existing upload relay.
-- **CLI/IDE agents and scripts with raw HTTP access:** omit \`file\` to mint a one-time \`upload_url\`, then PUT the raw file bytes to that URL with the returned Content-Type. This is two transport steps but still sends no base64 through model context.
-- **Shell-less non-ChatGPT MCP connectors:** standard MCP tool arguments have no protocol-level file input, and the host may not be able to execute the raw PUT. Such a client cannot upload through this tool unless its host supplies compatible file references or raw HTTP access.
+- **Native-file connector clients:** \`file\` carries a temporary authorized file reference that this tool streams through the upload relay.
+- **Clients with raw HTTP access:** an omitted \`file\` mints a one-time \`upload_url\` that accepts raw bytes with the returned Content-Type. This two-step transport keeps base64 outside conversational context.
+- **Other shell-less MCP clients:** standard MCP arguments have no protocol-level file input, so upload availability depends on compatible host file references or raw HTTP access.
 
-The connector reference and upload URL are temporary transports, not the durable artifact. After storage, every client uses the same saved bytes by \`path\`; use \`fs_signed_url\` for a private human download or \`public:true\` + \`fs_public_url\` for a permanent public URL. The PUT response and native call both return \`{ path, size_bytes, content_type, version }\`.
+The connector reference and upload URL are temporary transports, not the durable artifact. After storage, the saved bytes are addressed by \`path\`; \`fs_signed_url\` provides a private human download and \`public:true\` with \`fs_public_url\` provides a permanent public URL. The PUT response and native call both return \`{ path, size_bytes, content_type, version }\`.
 
 \`file\` must be a connector-provided file reference. A local path string, URL string, base64 string, or text value is rejected rather than being mistaken for bytes. \`content_type\` overrides connector metadata; otherwise MIME is inferred from connector metadata and the filename/path. Files are private unless \`public:true\` is supplied.
 
@@ -6358,7 +6358,7 @@ The connector reference and upload URL are temporary transports, not the durable
         path: { type: 'string', description: 'Destination storage path with leading slash, e.g. "/uploads/avatar.png".' },
         file: {
           type: 'object',
-          description: 'Native connector file. ChatGPT supplies {download_url, file_id, mime_type?, file_name?}. Never pass a path string, base64, or inline bytes. Omit only to request the raw-PUT upload_url fallback.',
+          description: 'Native connector file reference shaped as {download_url, file_id, mime_type?, file_name?}. Path strings, base64, and inline bytes are rejected. An omitted value requests the raw-PUT upload_url fallback.',
           properties: {
             download_url: { type: 'string', description: 'Temporary connector-authorized download URL.' },
             file_id: { type: 'string', description: 'Connector file identifier.' },
@@ -6785,7 +6785,7 @@ Files are PRIVATE by default. Asking for a public URL does NOT silently expose a
       properties: {
         project_id: { type: 'string', description: "Project ID (UUID), subdomain, or slug — resolved server-side, no UUID lookup needed. 'default' also works when the account has exactly one project; multi-project accounts must name one (the error lists them)." },
         path: { type: 'string', description: 'Full path with leading slash' },
-        make_public: { type: 'boolean', description: 'Publish a private file so the URL is world-readable. Required to expose a private file; an already-public file ignores it. Omit to keep the file private (a private file then returns an error instead of being silently exposed).' },
+        make_public: { type: 'boolean', description: 'World-readable publication flag. A private file requires true for exposure; an already-public file ignores it. Omission preserves privacy and returns an error rather than silently exposing a private file.' },
       },
       required: ['project_id', 'path'],
     },
@@ -7273,7 +7273,7 @@ The platform-managed sender is transactional-only. Add a verified sender domain 
         subject: { type: 'string', description: 'Email subject line' },
         html: { type: 'string', description: 'HTML body. Optional if text is set.' },
         text: { type: 'string', description: 'Plaintext body. Optional if html is set.' },
-        from: { type: 'string', description: 'Optional sender on a verified sender domain. Omit it to use the platform-managed transactional sender with the project name as its label.' },
+        from: { type: 'string', description: 'Optional sender on a verified sender domain. Omission selects the platform-managed transactional sender with the project name as its label.' },
         reply_to: { type: 'string', description: 'Optional reply-to address.' },
       },
       required: ['project_id', 'to', 'subject'],
@@ -7585,13 +7585,13 @@ Structured output: pass response_schema as a JSON-stringified JSON Schema, witho
       properties: {
         project_id: { type: 'string', description: "Project ID (UUID), subdomain, or slug — resolved server-side, no UUID lookup needed. 'default' also works when the account has exactly one project; multi-project accounts must name one (the error lists them)." },
         messages: { type: 'string', description: 'JSON-stringified array of {role, content} messages. content is a string OR Anthropic content-block array (for tool_result multi-turn).' },
-        provider: { type: 'string', description: 'Optional provider from ai_catalog. Omit both provider and model for free starter chat. Explicit providers use their normal pricing.' },
+        provider: { type: 'string', description: 'Optional provider from ai_catalog. Omission of both provider and model selects free starter chat. Explicit providers use their normal pricing.' },
         model: { type: 'string', description: 'Optional concrete model ID or alias from ai_catalog. Explicit selection uses the paid path unless cataloged as included.' },
         max_tokens: { type: 'number', description: 'Optional output-token budget, default 1024. Free default capped at 1024; explicit models have their catalog limits.' },
         system: { type: 'string', description: 'Optional system prompt' },
         tools: { type: 'string', description: 'Optional JSON-stringified Anthropic tool definitions. Passed through unchanged.' },
         tool_choice: { type: 'string', description: 'Optional JSON-stringified Anthropic tool_choice directive (e.g. {"type":"auto"} or {"type":"tool","name":"fs_search"}).' },
-        response_schema: { type: 'string', description: 'Optional JSON-stringified JSON Schema. Inspect parsed and parse_error in the response. Cannot combine with tools or stream. Free default makes no repair request.' },
+        response_schema: { type: 'string', description: 'Optional JSON-stringified JSON Schema. The response exposes parsed and parse_error. This field cannot combine with tools or stream; the free default makes no repair request.' },
         conversation_id: { type: 'string', description: 'Optional caller-chosen chat key (any string up to 128 chars). Reuse this key on subsequent ai_complete calls to load prior turns. To read, delete, or fork the saved record, first call ai_conversation_list without conversation_id and use its returned id.' },
         subject_type: { type: 'string', description: "Required with conversation_id. Conversation owner type; use 'app_user' for signed-in app users. Reuse the same scope for conversation reads." },
         subject_id: { type: 'string', description: 'Required with conversation_id. Conversation owner id. Reuse the same scope for conversation reads.' },
@@ -7609,7 +7609,7 @@ Structured output: pass response_schema as a JSON-stringified JSON Schema, witho
     visibility: 'authenticated',
     paid: false,
     surfaces: ["full","connector"],
-    protocol: { surfaceDescriptions: { connector: "Generate a text response. Omit provider/model for the capped free starter; explicit paid models charge project usage." }, surfaceAnnotations: { connector: {"title":"Ai Complete","readOnlyHint":false,"destructiveHint":true} },  },
+    protocol: { surfaceDescriptions: { connector: "Generate a text response. The capped free starter is selected when provider and model are omitted; explicit paid models charge project usage." }, surfaceAnnotations: { connector: {"title":"Ai Complete","readOnlyHint":false,"destructiveHint":true} },  },
     execute: async (runtime, args) => {
       const { fetcher, authHeader } = runtime;
       let result: ToolUpstreamResult;
@@ -9724,16 +9724,16 @@ the run while preserving console, network, and screenshot state.
     inputSchema: {
       type: 'object',
       properties: {
-        project_id: { type: 'string', description: "Project to look at / test (UUID, subdomain, slug, or 'default'). Resolved server-side; opens the project's deployed root by default. Recommended — required for screenshots + auth. Omit it (with a `url`) to inspect an arbitrary third-party page; omit it (with `html`) to render a snippet that isn't stored." },
-        url: { type: 'string', description: 'Page URL to open (http/https, no private networks). WITHOUT project_id this can be ANY public third-party page (e.g. https://example.com); WITH project_id it must be on the project\'s own origin. A *.somewhere.site url resolves to your project automatically.' },
+        project_id: { type: 'string', description: "Owned project authority (UUID, subdomain, slug, or 'default'). It opens the deployed root by default and is required for actions, steps, eval, auth, session seeding, persistent sessions, and project-file screenshots. Without it, a public external URL supports inspection and screenshots only; html supports isolated rendering." },
+        url: { type: 'string', description: 'Public HTTP/HTTPS page URL; private networks are refused. Without project_id, external public URLs support inspection and screenshots only. With project_id, navigation and action targets must stay on an authorized origin owned by that project. Normal external assets and API requests made by the owned app remain available under backend policy. A *.somewhere.site URL resolves to the owned project automatically.' },
         html: { type: 'string', description: 'Raw HTML to render straight to an image (up to 1MB), instead of navigating a url. No steps/auth/DOM-map — just the rendered picture (e.g. an OG card). Returns the image inline (base64), or the stored file path when `storage` is set (storage requires project_id). Honours the full `capture` bag — including `as: "pdf"` (an invoice/receipt/certificate from an HTML string), `full_page` and `quality` — plus width/height/wait_for. An html snippet has no origin, so steps, auth and cookies do not apply to it.' },
         actions: {
           type: 'array',
           maxItems: 30,
-          description: 'Preferred concise action sequence, shared exactly with the CLI --actions JSON file. Each item has one action key: {click:selector}, {fill:selector,value}, {upload:selector,file:data-url-or-base64,name?}, {select:selector,value}, {wait:selector|ms}, {expect:{selector,text?|value?|visible?|count?}}, {screenshot:label}, or {eval:js}. The CLI additionally resolves a local path in upload.file before calling the hosted API. Always stops on the first failure; every result includes ok and an error reason when false.',
+          description: 'Concise action sequence requiring project_id and a project-owned navigation origin. Each item has one action key: {click:selector}, {fill:selector,value}, {upload:selector,file:data-url-or-base64,name?}, {select:selector,value}, {wait:selector|ms}, {expect:{selector,text?|value?|visible?|count?}}, {screenshot:label}, or {eval:js}. The CLI additionally resolves a local path in upload.file before calling the hosted API. Execution stops on the first failure, and every result includes ok plus an error reason when false.',
           items: { type: 'object' },
         },
-        steps: { type: 'array', description: 'Legacy ordered step objects. Each step has an action plus that action fields; add frame to target an iframe. Omit or pass [] to inspect without driving. Ignored when html is set.', items: { type: 'object' } },
+        steps: { type: 'array', description: 'Legacy ordered step objects requiring project_id and a project-owned navigation origin. Each step has an action plus its fields; `frame` targets an iframe. An omitted or empty array performs inspection without driving. Ignored when html is set.', items: { type: 'object' } },
         expect_requests: {
           type: 'array',
           maxItems: 30,
@@ -9748,19 +9748,19 @@ the run while preserving console, network, and screenshot state.
           },
         },
         visible_only: { type: 'boolean', description: 'When true, dom_outline omits hidden controls. Every returned node still carries visible, plus disabled when applicable.' },
-        include: { type: 'array', description: 'Opt-in heavy sections for a no-steps inspect call (omitted by default to keep the payload lean). Values: "network" (the full per-request network table — method/status/timing — plus the redirect chain), "dom" (dom_outline — every interactive element with a selector — plus the testid handle map), and/or "markdown" (the page extracted as clean MARKDOWN — headings, links, lists — so you read structured text instead of vision-parsing the screenshot). Example: ["network","dom","markdown"]. console_errors / page_errors / failed_requests / rendered_text are ALWAYS returned regardless. "dom" works on a steps run too — the map is read after the last step, so it describes the page your flow left behind; "network" and "markdown" apply to a no-steps inspect call.', items: { type: 'string', enum: ['network', 'dom', 'markdown'] } },
+        include: { type: 'array', description: 'Opt-in heavy sections for a no-steps inspect call. Values: "network" (full request table and redirect chain), "dom" (interactive-element outline and testid handles), and "markdown" (clean page structure). Example: ["network","dom","markdown"]. console_errors, page_errors, failed_requests, and rendered_text are always returned. On a steps run, "dom" describes the final page; "network" and "markdown" apply to no-steps inspection.', items: { type: 'string', enum: ['network', 'dom', 'markdown'] } },
         extract: { type: 'string', description: 'Structured extraction shortcut for a no-steps inspect call (same as include:["markdown"]). "markdown" (or true) → return the page as clean MARKDOWN in the `markdown` field — headings, links, lists, emphasis, main content only — the cheapest way to READ a page vs vision-parsing a screenshot or grepping rendered_text. "text" is a no-op (the plain rendered text is already returned as `rendered_text`). Bounded.', enum: ['markdown', 'text'] },
-        session_id: { type: 'string', description: 'Opt-in PERSISTENT SESSION handle (1–64 chars: letters/digits/dot/dash/underscore, e.g. "checkout-flow"). Pass the SAME session_id across calls to keep ONE live browser page alive between them — navigate in call 1, then in call 2 wait for a slow stream and screenshot, all against the same page (cookies, current URL, in-flight stream preserved). Call 1 launches + records the session and returns session_id + session_expires_at; later calls RECONNECT (a reconnect skips the initial navigation — the page is where you left it). The session is yours only (scoped to your key), capped by your account plan, and idles out fast (~3 min) with a ~10 min hard cap; if it has expired the call transparently starts fresh (session_note: "session expired, started fresh"). OMIT for the default: every call is a fresh, cache-safe browser (recommended unless you specifically need cross-call state).' },
-        help: { type: 'boolean', description: 'Return the full action reference (every action + its fields, the `frame` targeting note, the wait/eval semantics) WITHOUT running anything. Use this first if you\'re unsure of the step shape.' },
-        viewport: { type: ['string', 'object'], description: "The LAYOUT viewport — real geometry, not a preset-only enum. 'desktop' (1280×800, default), 'mobile' (390×844), or an explicit { \"width\": 1600, \"height\": 1200 } (width 100–3840, height 100–2160). Use this to test a responsive breakpoint. NOTE: this is the page size; `capture.width` only shrinks the resulting IMAGE." },
-        inline: { type: 'boolean', description: 'Return the screenshot inline as an MCP image content block so it renders directly in the conversation. Default true. In page/steps mode the inline image is the "just look" page shot only (steps screenshots stay as stored file paths); in `html` mode it is the rendered snippet. The file path is always kept in the output as the durable artifact. An image whose base64 exceeds ~750KB is not inlined. Pass false to skip the inline image entirely.' },
-        store: { type: 'boolean', description: 'No-`project_id` ("eyes" mode) only: persist the FULL-RES screenshot to an ephemeral, self-expiring scratch store and return a short-lived signed URL (screenshots[].scratch_url + scratch_expires_at, ~1h, auto-deleted after a couple of days) INSTEAD of the inline base64. Use this for a big external-page capture you want as a link rather than a large inline blob. It never touches any project storage. Ignored WITH a project_id (those screenshots save to the project filesystem). Default off (inline unchanged).' },
-        capture: { type: 'object', description: 'What to capture and how — the ONE output knob. Fields: `as` ("png" | "jpeg" | "webp" | **"pdf"** — pdf PRINTS the page, no separate tool), `full_page` (capture the whole scrollable page), `width` (target OUTPUT image width in px, default 800 — shrinks the image, never upscales, and does NOT change the layout: use `viewport` for that), `quality` (1–100, jpeg/webp only, default 70), and for pdf: `paper` ("A4" | "A3" | "Letter" | "Legal" | "Tabloid", default Letter), `landscape`, `print_background` (default true). Small + cheap by default (~800px JPEG q70) so vision-token cost stays low; override when you need pixel precision, e.g. { "width": 1280, "as": "png" }. Applies to the no-steps page capture and any screenshot step.' },
+        session_id: { type: 'string', description: 'Opt-in persistent-session handle requiring project_id and a project-owned origin (1–64 letters, digits, dots, dashes, or underscores). Reusing it reconnects to one live page with cookies, current URL, and in-flight requests preserved. The first call returns session_id and session_expires_at; reconnect skips initial navigation. Sessions are caller-scoped, plan-capped, idle about 3 minutes, and have about a 10-minute hard cap. Omission creates a fresh browser for every call.' },
+        help: { type: 'boolean', description: 'True returns the full action reference, including action fields, frame targeting, and wait/eval semantics, without running a browser.' },
+        viewport: { type: ['string', 'object'], description: "Layout viewport geometry: 'desktop' (1280×800, default), 'mobile' (390×844), or { \"width\": 1600, \"height\": 1200 } within width 100–3840 and height 100–2160. This controls page layout; `capture.width` only shrinks the output image." },
+        inline: { type: 'boolean', description: 'Inline MCP image output, default true. Page/steps mode inlines only the final page shot; step screenshots remain stored paths. Html mode inlines the rendered snippet. The durable file path remains in output. Images above about 750KB are not inlined; false disables inline image output.' },
+        store: { type: 'boolean', description: 'External inspection without project_id only. True stores the full-resolution screenshot in ephemeral scratch storage and returns a short-lived signed URL instead of inline base64. It never uses project storage. With project_id this field is ignored because screenshots save to project files. Default false.' },
+        capture: { type: 'object', description: 'Capture configuration. `as` is png, jpeg, webp, or pdf; `full_page` covers the scrollable page; `width` is output width (default 800) and does not change layout; `quality` is 1–100 for jpeg/webp (default 70). PDF fields are `paper`, `landscape`, and `print_background`. It applies to no-steps capture and screenshot steps.' },
         screenshot: { type: 'object', description: 'Deprecated spelling of `capture` (same fields; `format` is accepted as an alias of `as`). Kept working for existing callers — new code should use `capture`.' },
         auth: { type: 'object', description: 'Drive as a logged-in user: { "user_id": "..." }. Mints a 1-hour impersonation session for that app user (audited) and injects it before navigation. Requires a project. Ignored when `html` is set.' },
-        continue_on_failure: { type: 'boolean', description: 'Run every step even after one fails (default false: a failed step aborts but still returns captured signals).' },
-        storage: { type: 'string', description: 'A project files path for THE capture — e.g. "/renders/hero.webp", "/og/card.png", "/invoices/inv-1234.pdf" (requires project_id). Works for a `url` capture, an `html` snippet, AND a `steps` run (there the capture is taken last, after the flow has put the page where you wanted it); the response returns the stored path. Omit it to get the image inline. Screenshots taken by `screenshot` STEPS keep their own /_browser_tests/ run directory — a steps run makes many labelled images and one path cannot name them all.' },
-        local_storage: { type: 'object', description: 'Key→value strings seeded into localStorage before page load — this is how you drive a page with a session you ALREADY hold (as opposed to `auth`, which mints one for one of your app users). The standard auth client keeps its session under "sw_auth". Requires url + project_id, and is hard-scoped to that project\'s own origins so credentials are never sent to a third-party site. Values are never logged. 8KB total cap across local_storage/cookies/headers.' },
+        continue_on_failure: { type: 'boolean', description: 'True continues after failed steps; false (default) aborts at the first failure while preserving captured signals.' },
+        storage: { type: 'string', description: 'Project-file path for the final capture, requiring project_id, e.g. "/renders/hero.webp" or "/invoices/inv-1234.pdf". It works with URL capture, html rendering, and steps; the response includes the stored path. Without it, the image is inline. Screenshot steps retain their own labelled files under /_browser_tests/.' },
+        local_storage: { type: 'object', description: 'Key/value localStorage session seed requiring url, project_id, and a project-owned origin. The standard auth client uses "sw_auth". Values are never logged. local_storage, cookies, and headers share an 8KB cap. Backend origin policy governs their delivery to owned-app requests and frames.' },
         cookies: { type: 'array', description: 'Array of { name, value } cookies set on the target origin before load. Same origin scoping and size cap as local_storage.', items: { type: 'object' } },
         headers: { type: 'object', description: 'Flat object of extra request headers (e.g. Authorization) sent with page requests. Same origin scoping and size cap as local_storage.' },
         width: { type: 'number', description: 'Legacy flat alias for viewport width (prefer `viewport: { width, height }`). With `html`, the snippet viewport width (default 1280).' },
@@ -9777,22 +9777,22 @@ the run while preserving console, network, and screenshot state.
     visibility: 'authenticated',
     paid: false,
     surfaces: ["full","connector"],
-    protocol: { surfaceDescriptions: { connector: "Open a URL in a browser, optionally perform the supplied actions, and return page evidence. Actions can change the target website. See https://somewhere.tech/docs.txt (Verify before deploy) for how browser checks fit the Somewhere deployment contract." }, surfaceAnnotations: { connector: {"title":"Browser","readOnlyHint":false,"destructiveHint":true} },  },
+    protocol: { surfaceDescriptions: { connector: "Inspect or screenshot an external public URL without project authority. Actions, steps, eval, authentication, session seeding, and persistent sessions require project_id, and their navigation stays on an authorized origin owned by that project. Owned apps may load their normal external assets and APIs under backend policy. Interactive operations can change application data. Returns page, console, network, and screenshot evidence." }, surfaceAnnotations: { connector: {"title":"Browser","readOnlyHint":false,"destructiveHint":true} },  },
     execute: async (runtime, args) => runCapture(runtime, args),
   },
   {
     definition: {
       name: 'site_verify',
-      description: 'Run one browser flow across desktop and phone viewports and return one structured verdict: every named step, page/console/network health, expected request outcomes, both screenshot paths or URLs, and a non-blocking accessibility/layout line per viewport covering WCAG AA text contrast, horizontal overflow, and tap targets below 44×44px. Pass auth or an existing project-scoped session seed to run every viewport logged in. Omit actions for a default load/health/two-screenshot check. Each viewport uses a fresh browser that is closed inside the call, including on failure.',
+      description: 'Runs one browser flow across desktop and phone viewports and returns one structured verdict: every named step, page/console/network health, expected request outcomes, both screenshot paths or URLs, and a non-blocking accessibility/layout line per viewport covering WCAG AA text contrast, horizontal overflow, and tap targets below 44×44px. Authenticated or seeded flows require project_id and a project-owned origin. An absent action list produces a load/health/two-screenshot check. Each viewport uses a fresh browser that closes inside the call, including on failure.',
       inputSchema: {
         type: 'object',
         properties: {
-          project_id: { type: 'string', description: 'Owned project to verify. Recommended so screenshots are stored in project files.' },
-          url: { type: 'string', description: 'Live URL to verify. With project_id it must be on that project origin; without project_id it may be any safe public URL and screenshots use short-lived links.' },
+          project_id: { type: 'string', description: 'Owned project authority. Required for actions, eval, authentication, and session seeds; it also enables screenshots in project files.' },
+          url: { type: 'string', description: 'Public live URL. Without project_id, external URLs support inspection and screenshots only. With project_id, navigation and action targets must remain on an authorized origin owned by that project. Normal external assets and APIs loaded by the owned app remain available under backend policy.' },
           actions: {
             type: 'array',
             maxItems: 30,
-            description: 'The concise browser actions contract: {click}, {fill,value}, {upload,file,name?}, {select,value}, {wait}, {expect:{selector,text?|visible?|count?}}, {screenshot}, or {eval}. Stops at the first failed action and names its 1-based step in the verdict.',
+            description: 'Concise browser actions requiring project_id and a project-owned navigation origin: {click}, {fill,value}, {upload,file,name?}, {select,value}, {wait}, {expect:{selector,text?|visible?|count?}}, {screenshot}, or {eval}. Execution stops at the first failed action and names its 1-based step in the verdict.',
             items: { type: 'object' },
           },
           auth: {
@@ -9850,7 +9850,7 @@ the run while preserving console, network, and screenshot state.
     surfaces: ["full","connector"],
     protocol: {
       oauthScopes: ['mcp'],
-      surfaceDescriptions: { connector: 'Run a browser verification flow on a website at desktop and phone sizes. Returns step results, page errors, network outcomes, and screenshots. Supplied actions can interact with the site and change application data; screenshots may be saved in project files. See https://somewhere.tech/docs.txt (Verify before deploy) for how verification fits the Somewhere deployment contract.' },
+      surfaceDescriptions: { connector: 'Inspect or screenshot an external public URL at desktop and phone sizes without project authority. Actions, eval, authentication, and session seeds require project_id, and their navigation stays on an authorized origin owned by that project. Owned apps may load their normal external assets and APIs under backend policy. Returns step results, page errors, network outcomes, and screenshots; interactive operations can change application data.' },
       surfaceAnnotations: { connector: { destructiveHint: true } },
     },
     execute: async (runtime, args) => runSiteVerify(runtime, args),
@@ -12339,10 +12339,10 @@ Returns status "active" (live now) or "pending_verification" — the destination
     inputSchema: {
       type: 'object',
       properties: {
-        project_id: { type: 'string', description: "Project ID (UUID), subdomain, or slug — resolved server-side, you don't need to look up the UUID. Use 'default' (or 'spine') to target the org's shared atomic task board; this is the right value for the platform's own dogfood/resolution-note workflow." },
+        project_id: { type: 'string', description: "Project ID (UUID), subdomain, or slug, resolved server-side. 'default' or 'spine' targets the organization's shared atomic task board used by the platform dogfood and resolution-note workflow." },
         title: { type: 'string', description: 'Short summary, required.' },
         description: { type: 'string', description: 'Long-form body.' },
-        status: { type: 'string', enum: ['backlog', 'open', 'in_progress', 'blocked', 'needs_review', 'done', 'archived'], description: "Defaults to 'open'. Use 'backlog' for raw ideas that haven't been triaged yet — devs filter them out with status='open'. Use 'blocked' when external action is required, 'needs_review' when work is done but waiting on sign-off." },
+        status: { type: 'string', enum: ['backlog', 'open', 'in_progress', 'blocked', 'needs_review', 'done', 'archived'], description: "Defaults to 'open'. 'backlog' represents untriaged ideas, 'blocked' represents work awaiting external action, and 'needs_review' represents completed work awaiting sign-off." },
         priority: { type: 'string', enum: ['low', 'normal', 'high', 'urgent'], description: "Defaults to 'normal'." },
         type: { type: 'string', description: "Defaults to 'task'. Classifies the row across the org spine: philosophy, roadmap, epic, task, bug, directive, report, spec — or whatever fits; type is a filter, not a taxonomy." },
         assignee: { type: 'string', description: 'Free-form assignee (user ID, email, or label).' },
@@ -12352,7 +12352,7 @@ Returns status "active" (live now) or "pending_verification" — the destination
         area: { type: 'string', description: 'Optional subsystem tag (free-form, e.g. "billing", "auth", "ui") for filtering related tasks.' },
         parent_id: { type: 'string', description: 'Optional parent task ID — makes this a sub-task of the given task.' },
         attachments: { type: 'array', items: { type: 'string' }, description: 'sw.fs paths to attach to this task (screenshots, logs, repro files). Each path is a string like "/uploads/screenshot.png" — not a full URL. Max 25 per task.' },
-        template: { type: 'string', enum: ['bug', 'feature', 'incident', 'security', 'docs', 'chore'], description: 'Optional template — fills priority/labels/area/description with sensible defaults. Caller-provided fields always win over template defaults. Use `tasks_templates` to inspect each template before picking.' },
+        template: { type: 'string', enum: ['bug', 'feature', 'incident', 'security', 'docs', 'chore'], description: 'Optional template that fills priority, labels, area, and description with defaults. Caller-provided fields override template defaults; `tasks_templates` exposes each template.' },
       },
       required: ['project_id', 'title'],
     },
@@ -12528,26 +12528,26 @@ Returns status "active" (live now) or "pending_verification" — the destination
     inputSchema: {
       type: 'object',
       properties: {
-        project_id: { type: 'string', description: "Project that owns the task — UUID, subdomain, or slug. Use 'default' (or 'spine') for the org's shared atomic task board." },
+        project_id: { type: 'string', description: "Project that owns the task: UUID, subdomain, or slug. 'default' or 'spine' selects the organization's shared atomic task board." },
         task_id: { type: 'string', description: 'The task ID.' },
         title: { type: 'string', description: 'New title.' },
         description: { type: 'string', description: 'New description.' },
-        status: { type: 'string', enum: ['backlog', 'open', 'in_progress', 'blocked', 'needs_review', 'done', 'archived'], description: "New status. Use 'blocked' when external action is required, 'needs_review' when work is done but waiting on sign-off." },
+        status: { type: 'string', enum: ['backlog', 'open', 'in_progress', 'blocked', 'needs_review', 'done', 'archived'], description: "New status. 'blocked' represents work awaiting external action; 'needs_review' represents completed work awaiting sign-off." },
         priority: { type: 'string', enum: ['low', 'normal', 'high', 'urgent'], description: 'New priority.' },
         type: { type: 'string', description: "New type. House vocab: philosophy, roadmap, epic, task, bug, directive, report, spec — or whatever fits; type is a filter, not a taxonomy. Empty value is a no-op (type can't be cleared)." },
         superseded_by: { type: 'string', description: 'Task ID of the row that replaces this one (a newer spec, a corrected directive). Empty string clears it.' },
-        shipped_in: { type: 'string', description: 'The deploy/version this work shipped in — a freeform tag you read from the deploy object at ship time (e.g. "v7"). Tagging it lets the reports under this task surface for review-for-closure. Empty string clears it.' },
-        status_note: { type: 'string', description: 'CURRENT STATE — one short paragraph answering "what is true right now", OVERWRITTEN each time rather than appended. This is the field to update as work progresses; do NOT add a new comment per step, which is what turns a long-lived task into an unreadable chronological tail. The previous value is kept in the activity log, so overwriting loses nothing. Capped at 2000 chars: it is a status line, not a document — the document is `description`. Empty string clears it.' },
-        health: { type: 'string', enum: ['on_track', 'at_risk', 'off_track'], description: 'Structured signal for how the work is GOING, independent of where it sits (`status`). A task can be in_progress and off_track at once. Leave unset when nobody has assessed it — absent reads differently from someone asserting it is fine. Pass null to clear.' },
+        shipped_in: { type: 'string', description: 'The deploy/version in which this work shipped, represented by the deploy object tag such as "v7". It exposes child reports for review-for-closure. An empty string clears it.' },
+        status_note: { type: 'string', description: 'Current state in one short paragraph, overwritten rather than appended as work progresses. Prior values remain in the activity log. The 2000-character cap distinguishes this status line from the living `description`; an empty string clears it.' },
+        health: { type: 'string', enum: ['on_track', 'at_risk', 'off_track'], description: 'Structured progress signal independent of `status`; for example, a task can be in_progress and off_track. Omission means nobody has assessed it, while null clears an existing assessment.' },
         assignee: { type: 'string', description: 'New assignee.' },
         labels: { type: 'array', items: { type: 'string' }, description: 'Replacement labels list. Task OS completion guidance is explicit-label-only; in v1 requires-deployment is the machine-enforced gate.' },
         due_at: { type: 'number', description: 'Unix timestamp (ms), or null to clear.' },
         area: { type: 'string', description: 'New subsystem tag, or empty string to clear.' },
         parent_id: { type: 'string', description: 'New parent task ID, or empty string to detach. A task may not be its own parent.' },
-        attachments: { type: 'array', items: { type: 'string' }, description: 'Replace the task attachments (sw.fs paths). Pass an empty array to clear.' },
+        attachments: { type: 'array', items: { type: 'string' }, description: 'Replacement task attachments as sw.fs paths. An empty array clears them.' },
         upload_attachments: {
           type: 'array',
-          description: 'Native connector files to upload and append in this call. ChatGPT supplies a top-level array of authorized file-reference objects through openai/fileParams. Each file is stored privately under /tasks/{task_id}/attachments/<name>; saved sw.fs paths are returned and appended. Binary bytes never enter model context. Do not pass path/base64 strings here.',
+          description: 'Native connector files to upload and append in this call. The top-level array contains authorized file-reference objects identified by openai/fileParams metadata. Each file is stored privately under /tasks/{task_id}/attachments/<name>; saved sw.fs paths are returned and appended. Binary bytes stay outside conversational context, and path/base64 strings are rejected.',
           items: {
             type: 'object',
             properties: {
@@ -12561,19 +12561,19 @@ Returns status "active" (live now) or "pending_verification" — the destination
         },
         comment: { type: 'string', description: 'If supplied, appends a comment with this body.' },
         author: { type: 'string', description: 'Optional display label to attribute the comment to (e.g. "bus", "sw-tasks-dx", "Uzair"). Lets many entities that share one account self-identify on the thread. Only used when `comment` is supplied; defaults to the account.' },
-        resolution_note: { type: 'string', description: "When closing a task (status='done'), the short explanation of what was done. Persisted as a comment and included in the resolution notification email + webhook payload. Strongly recommended whenever you set status to 'done'." },
-        deployment_project_id: { type: 'string', description: "The project whose successful deploy proves this work is live — ID, subdomain, or slug. It does not have to be the project that owns the task, and on the shared board it never is (the board holds no deploys of its own). Defaults to the task's project. You must have access to it." },
-        deployment_version: { type: 'number', description: 'Successful production version number of deployment_project_id, verified before the task is updated or closed. Read it from project_deploys for that project.' },
+        resolution_note: { type: 'string', description: "Short outcome explanation for a task closing with status='done'. It persists as a comment and appears in the resolution notification email and webhook payload." },
+        deployment_project_id: { type: 'string', description: "Accessible project whose successful deploy proves the work is live: ID, subdomain, or slug. It may differ from the task-owning project and always does on the deploy-less shared board. The task's project is the default." },
+        deployment_version: { type: 'number', description: 'Successful production version number of deployment_project_id, verified before task update or closure and available from project_deploys.' },
         relationship: {
           type: 'object',
-          description: 'Add one typed relationship from this task to another task in the same project.',
+          description: 'One typed relationship from this task to another task in the same project.',
           properties: {
             type: { type: 'string', enum: ['child_of', 'discovered_by', 'implements', 'blocked_by', 'duplicate_of', 'supersedes'] },
             task_id: { type: 'string', description: 'Related task id in the same project.' },
           },
           required: ['type', 'task_id'],
         },
-        remove_relationship_id: { type: 'string', description: 'Delete one explicit relationship by id. parent_id-backed child_of edges must be removed by clearing parent_id.' },
+        remove_relationship_id: { type: 'string', description: 'Identifier of one explicit relationship to delete. A parent_id-backed child_of edge is removed by clearing parent_id instead.' },
       },
       required: ['project_id', 'task_id'],
     },
@@ -13804,9 +13804,18 @@ function withChatgptToolMetadata(t: MCPTool): MCPTool & {
 }
 
 function constrainToolDefinitionToSurface(t: MCPTool, surface: ToolSurface): MCPTool {
+  const inputSchema = surface !== 'full' && t.name === 'project_grep'
+    ? {
+        ...t.inputSchema,
+        properties: Object.fromEntries(
+          Object.entries(t.inputSchema.properties).filter(([name]) => name !== 'scope'),
+        ),
+      }
+    : t.inputSchema;
   return {
     ...t,
     description: constrainCanonicalText(TOOL_SPEC_BY_NAME.get(t.name)?.protocol?.surfaceDescriptions?.[surface] ?? t.description, surface),
+    inputSchema,
   };
 }
 
@@ -17628,6 +17637,25 @@ async function handleMCPRequest(request: Request, env: Env, ctx: ExecutionContex
                 ok: false,
                 error: 'TOOL_NOT_AVAILABLE',
                 message: `Tool "${requestedToolName}" is not available on the ${activeSurface} surface.`,
+              }, null, 2),
+            }],
+            isError: true,
+          });
+        }
+
+        // Fleet-wide source search is an administrative capability. Curated
+        // connector surfaces neither advertise the argument nor accept a
+        // stale client supplying it; the request is rejected before any
+        // upstream call. The full surface keeps the administrative schema and
+        // the API remains the authority for admin authentication.
+        if (toolName === 'project_grep' && activeSurface !== 'full' && toolArgs.scope !== undefined) {
+          return respondWithToolResult({
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'ARGUMENT_NOT_AVAILABLE',
+                message: 'The project_grep scope argument is not available on this surface. Project-scoped search requires project_id.',
               }, null, 2),
             }],
             isError: true,

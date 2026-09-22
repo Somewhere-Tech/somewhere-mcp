@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "source_repository": "Somewhere-Tech/somewhere-tech",
-  "source_ref": "32e2dfc6fd0f454070f8a053cba4627aad5a1868",
-  "source_sha": "32e2dfc6fd0f454070f8a053cba4627aad5a1868",
+  "source_ref": "d8de10164da1a6f87ec1d795d277faf9d3ce7856",
+  "source_sha": "d8de10164da1a6f87ec1d795d277faf9d3ce7856",
   "files": {
     ".cursor-plugin/plugin.json": {
       "bytes": 458,
@@ -25,8 +25,8 @@
       "sha256": "936621f490e5c921768246746ff7e08075a8767a2e47df70e7ab51f21e0a57db"
     },
     "mcp-server/scripts/test-claude-directory.mjs": {
-      "bytes": 10650,
-      "sha256": "34ad6051aec4038b46bec2bf84ba2b6343477411bbd6c82b033719774241fabd"
+      "bytes": 16256,
+      "sha256": "d8e7a1ce3ac8de0b0e3db443b64e3f5801d635ab6b1541755bd02bab39408454"
     },
     "mcp-server/scripts/test-json-rpc-response-envelope.mjs": {
       "bytes": 4845,
@@ -133,24 +133,24 @@
       "sha256": "e2821fea6ca76f952a05c11e1fa397c08f607ea78cce4ca093baa37d8237976c"
     },
     "mcp-server/src/index.ts": {
-      "bytes": 924811,
-      "sha256": "796ae73813976b79a4eb36cf358c4562595739b9af0eae4f6a5e889998031381"
+      "bytes": 922657,
+      "sha256": "717896ac5b6bfd99eee18d340a754956e434aea29ca5ad598b7789e0ad74ef15"
     },
     "mcp-server/src/platform-help-derived.ts": {
       "bytes": 448943,
       "sha256": "5d2d9ed5f2eb4776c536d9058f3fa78308313ad68aa65d916dcff250fb937f3a"
     },
     "mcp-server/src/platform-help.ts": {
-      "bytes": 642384,
-      "sha256": "6e8e2b987f11110dd9db5f29dc25ba588ea260b40b9d17a2694a68b3395ca359"
+      "bytes": 646300,
+      "sha256": "4c9eddf70a523342f71393d49bc395c1c7504e8c8579fdf8d225ec1cf73e4d72"
     },
     "mcp-server/src/project-deploy-input.ts": {
       "bytes": 967,
       "sha256": "65919ba01c3e6a0f5f51c1d31edc36e71c3d1a75431d899d0cdd0b922cbd8cc8"
     },
     "mcp-server/src/project-notices.ts": {
-      "bytes": 3625,
-      "sha256": "fdf13e6e465e238592ca888eddd075c2c75144117c1cf55df74479333ee980d2"
+      "bytes": 3812,
+      "sha256": "e6defcbfea9062ce0deb1fcc2e22b5984a68d62764efad68b5141003767113d2"
     },
     "mcp-server/src/protocol-2026.ts": {
       "bytes": 16840,
@@ -185,8 +185,8 @@
       "sha256": "acb282fedae7e5ddcc1963fdc89a055e5935c2b9ecd94da835387b01d8bcac51"
     },
     "mcp-server/src/tool-registry/domains/task-reads.ts": {
-      "bytes": 8610,
-      "sha256": "ee01eba7645d42055d723dbae2ce0ca5ef8943bed1f9f4b0afe714f568495d78"
+      "bytes": 8548,
+      "sha256": "11c6755f4f879d57bf88457274e38c77cb71f17be05c29f01c44cc29b9fc4121"
     },
     "mcp-server/src/tool-registry/types.ts": {
       "bytes": 3164,

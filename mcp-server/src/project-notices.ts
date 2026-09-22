@@ -48,12 +48,12 @@ export function projectNoticeBanner(notices: ProjectNotice[]): string | null {
 export function projectNoticeConnectInstructions(payload: ProjectNoticePayload): string {
   if (payload.notices.length === 0) return '';
   const lines = payload.notices.slice(0, 10).map((notice) => {
-    const banner = projectNoticeBanner([notice]) ?? '';
-    return `${banner}\n  Delivery context: project_id=${notice.project_id}, notice_id=${notice.id}. `
-      + 'Use project_notice_acknowledge to mark it read or snooze it; this does not resolve the underlying project issue.';
+    const project = notice.project_subdomain ? `, project=${compactLine(notice.project_subdomain, 80)}` : '';
+    return `[somewhere notice due: severity=${severityLabel(notice.severity)}${project}, project_id=${notice.project_id}, notice_id=${notice.id}] `
+      + 'The complete notice is available through catalog with project_id. project_notice_acknowledge records acknowledgement or snooze delivery state without resolving the underlying project issue.';
   });
   const more = payload.notices.length > 10
-    ? `\n${payload.notices.length - 10} more notices are due; call catalog with the relevant project_id to inspect them.`
+    ? `\n${payload.notices.length - 10} additional notices are due and are available through catalog with the relevant project_id.`
     : '';
   return `${lines.join('\n')}\n${more}\n\n`;
 }

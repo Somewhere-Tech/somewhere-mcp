@@ -887,6 +887,13 @@ Somewhere is not a drop-in Supabase replacement. Migrate the app's data and
 access contract; changing an import does not migrate queries, permissions,
 authentication, files, or live-update behavior.
 
+If you would rather keep your data in PostgreSQL than port it to the managed
+database, you can: attach your own database and query it with the provider's
+driver (\`docs({ topic: 'postgres' })\`). That decision is only about the
+data layer — auth, files, functions and live updates are still the separate
+moves described below, and an attached database gets none of the declared
+permissions this page is about.
+
 ## Declare the data contract
 
 Declare tables, fields, access scopes, relations, and browser operation grants
@@ -2453,6 +2460,12 @@ and hand it to your functions.
 
 The provider is Neon. You connect it with a Neon API key you create in your own
 Neon account.
+
+Available on every plan, Free included. That is possible precisely because the
+database is not ours: Neon bills you directly on their own published pricing,
+which has a free tier of its own, and nothing about the attachment is metered
+or marked up here. Your Somewhere plan decides what the rest of the platform
+gives you; it does not gate this.
 
 ## What this is not
 
@@ -5110,6 +5123,16 @@ sections instead of the default DOM map; include \`"dom"\` to retain it.
 
 ## Capture any page, or render raw HTML
 
+You can look at any public page and you can photograph it. What you cannot do
+is operate it: actions, \`eval\` and signed-in sessions run only against the
+origins of an authorized project of yours. Navigation off those origins during
+such a run is REFUSED before the request is made — the run stops and reports
+the refusal as evidence, rather than quietly continuing with fewer powers.
+
+This bounds who the browser may act AS, not what your app may talk to. Your
+project's own pages keep making their ordinary outbound requests — API calls,
+assets, third-party scripts — exactly as they do for any visitor.
+
 Use \`browser\` to capture a public page or render raw HTML:
 
   // Any public third-party page — pass a url with NO project_id:
@@ -5127,11 +5150,16 @@ The MCP tool routes \`html\` to the renderer; direct HTTP callers use
 \`POST /v1/render/screenshot\` with the same HTML fields, not the page-test route.
 \`html\` mode skips navigation/steps/DOM-map — it just returns the picture.
 \`width\` / \`height\` / \`wait_for\` tune it. With \`project_id\`, the
-initial \`url\` must belong to that project. Signed-in accounts may follow
-a flow to another public site; temporary accounts remain within their own
-project. To start at another public site, omit \`project_id\`.
+\`url\` must belong to that project. To look at another public site, omit
+\`project_id\` — and that run is inspection and capture only.
 
 ## Drive a flow (add actions)
+
+Driving a page is a project capability. Supply \`project_id\`, and every
+action — including \`eval\` — runs against that project's own origins. The
+platform enforces this wherever this action shape is accepted: an action that
+would navigate outside those origins is refused before it is attempted, and
+the run reports that refusal instead of proceeding.
 
 \`actions\` is the one shared action shape used by the MCP tool, a CLI
 \`--actions\` JSON file, and \`verify --flow\`'s \`actions\` field. Each item
@@ -5161,7 +5189,11 @@ for example \`{ "screenshot": "after-save" }\`.
   browser({ project_id: 'my-saas', auth: { user_id: 'usr_123' }, actions: [...] })
 
 Mints a 1-hour session for that app user (audited) and injects it before
-navigation, so authed pages work. Requires a project.
+navigation, so authed pages work. Requires a project, and the seeded
+credentials are scoped to that project's origins — they are not handed to any
+other origin the page loads from, and a navigation that would leave those
+origins is refused rather than followed. There is no way to seed a session for
+a site you do not own.
 
 ## Reading the result
 
@@ -5199,7 +5231,11 @@ a temporary screenshot link.
 - Project-backed runs require access to that project. Screenshots stored in
   project files also use its file allowance and write limits.
 - Temporary accounts may test their own project and cannot retain a browser
-  session. Signed-in accounts may inspect other public websites.
+  session.
+- Signed-in accounts may inspect and screenshot other public websites;
+  temporary accounts stay within their own project, as above. On either,
+  actions, \`eval\` and seeded sessions are available only against an
+  authorized project's own origins.
 `,
 
   'github': `# GitHub push-to-deploy
@@ -12594,7 +12630,7 @@ What's different from Postgres (most don't matter for app code):
 ## When to reach for Postgres
 
 ✗ Heavy analytics / complex window queries over hundreds of millions of rows (use a warehouse).
-✗ Existing Postgres-native ecosystem (PostGIS, pgvector tuning, specific extensions you depend on).
+✗ Existing Postgres-native ecosystem (PostGIS, pgvector tuning, specific extensions you depend on) — attach your own rather than leaving, \`docs({ topic: 'postgres' })\`.
 ✗ Cross-region multi-master writes that need >1 simultaneous writer.
 
 ## Managed project database vs Postgres and Neon
@@ -12607,11 +12643,24 @@ functions. The compiler checks declared contracts and known unsafe shapes; it
 does not prove that every query is correct or efficient.
 
 Postgres provides its own semantics, extensions, drivers, and operational
-ecosystem. Neon provides managed Postgres plus HTTP and WebSocket driver
-options. With either, the application chooses and configures the provider,
-region, credentials, connection behavior, migrations, authorization policy,
-transactions, and recovery plan. Next.js can integrate these providers; the
-framework does not choose those policies for the application.
+ecosystem. You do not have to leave to use it: a project can attach ONE
+external PostgreSQL database — a Neon database in your own account, on any
+plan including Free — and query it from deployed functions through the
+provider's official driver (\`docs({ topic: 'postgres' })\`). That is
+pass-through. The account, the bill, the region, the credentials, the
+migrations, the authorization policy and the recovery plan are all yours, and
+none of the managed database's guarantees carry over: no
+\`db/schema.ts\`, no generated client, and NO declared row permissions on
+those statements.
+
+So the two are for different jobs rather than ranked. Reach for an attached
+PostgreSQL when the data or the SQL already exists there, when you need an
+extension or a behaviour Postgres has and the managed database does not, or
+when existing Postgres tooling and reporting are part of how you work. The
+managed project database stays the default for application data precisely
+because of what it does for you: declared permissions enforced on every
+structured call, a generated typed client, and deploy-time diagnostics. Many
+apps want one; some want both.
 
 Neon references: https://neon.com/docs/reference/compatibility and
 https://neon.com/docs/serverless/serverless-driver
@@ -12988,6 +13037,10 @@ Unlimited projects + deploys on every tier. See
   paid plans include unlimited users. Clerk's $25 Pro tier caps at 5K MAUs,
   then $0.02 each.
 - Bandwidth and storage carry no extra usage charges.
+- **An attached PostgreSQL database**: nothing, on any plan including Free.
+  You attach a database in your own provider account and they bill you
+  directly on their published pricing — we do not meter it, mark it up, or
+  resell it. \`docs({ topic: 'postgres' })\`.
 
 ## Payments & AI — what we DO charge
 
@@ -13166,9 +13219,13 @@ Related: \`sw.db\`, \`security-model\`, \`portability\`.
 
 ## When to use Supabase
 
-✗ **Heavy Postgres dependency.** You already rely on pgvector tuning,
-  PostGIS, JSON path queries with complex aggregations, listen/notify,
-  or a Postgres-specific extension we don't substitute for.
+✗ **Heavy Postgres dependency you want managed FOR you.** pgvector tuning,
+  PostGIS, listen/notify, or an extension we don't substitute for. Worth
+  knowing before you decide: you can attach your own PostgreSQL database here
+  instead of leaving — any plan, Free included, your provider account and your
+  bill (\`docs({ topic: 'postgres' })\`). What Supabase gives you that an
+  attachment does not is Postgres managed as a product, with their console,
+  their backups and their support behind it.
 ✗ **Existing Supabase project with momentum.** No reason to migrate
   for migration's sake.
 ✗ **Complex relational data at scale (>10 GB single project).** Our
@@ -13177,13 +13234,15 @@ Related: \`sw.db\`, \`security-model\`, \`portability\`.
 ✗ **Self-host requirement.** Supabase is open-source and you can
   self-host the whole thing. We are not self-hostable.
 ✗ **You want Postgres-native client libraries.** PostgREST, postgrest-js,
-  the broader Postgres tooling ecosystem.
+  the broader Postgres tooling ecosystem. An attached database here speaks to
+  the provider's official driver, not to PostgREST.
 
 ## What's roughly equivalent
 
 | Need                | somewhere.tech              | Supabase                  |
 |---|---|---|
 | Database            | \`sw.db\` (full SQL)        | \`supabase.from()\` (Postgres) |
+| Real PostgreSQL     | attach your own, \`sw.postgres\` | built in, managed by them |
 | Auth                | \`sw.auth\` (Google, magic link, MFA) | \`supabase.auth\` |
 | Storage             | \`sw.fs\` (no egress fees)  | \`supabase.storage\` (S3) |
 | Row-level security  | \`sw.db.from/insert/update\` (auto-scoped) | Postgres RLS policies |
@@ -13207,7 +13266,10 @@ Related: \`sw.db\`, \`security-model\`, \`portability\`.
   coverage and warnings: unsupported credentials require a password reset.
   Sessions, refresh tokens, reset codes and MFA secrets are never exported.
   See \`migration.txt\` for the same portability contract.
-→ **Supabase → somewhere.tech**: \`pg_dump\` → import via \`db_migrate\` +
+→ **Supabase → somewhere.tech**: today this is a per-piece migration, and
+  each piece is its own move — there is no one-shot import, and copying a
+  database would not carry auth, files or functions with it. Steps:
+  \`pg_dump\` → import via \`db_migrate\` +
   \`db_import_csv\` per table. Auth users: export from Supabase via their
   admin API, then POST the rows to \`/v1/auth/import\` (up to 1,000 per
   request) — bcrypt is the default, so hashes import as-is and each user
