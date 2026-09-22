@@ -2569,6 +2569,28 @@ shape, express the decision inside the SQL — a conditional \`UPDATE\`, a
 \`CTE\`, a \`RETURNING\` you act on — rather than reaching for a session that
 is not there.
 
+**Sending \`BEGIN\` yourself does not make one, and it will not fail loudly.**
+This is the migration pitfall, and it is worth being blunt about because
+carried-over Postgres code hits it on the first try:
+
+  // DOES NOT DO WHAT IT LOOKS LIKE.
+  await sw.postgres.query('BEGIN');
+  await sw.postgres.query('INSERT INTO ledger ...');
+  await sw.postgres.query('ROLLBACK');        // the row is still there
+
+Every \`query\` call is its own HTTP request and nothing carries between them,
+so each statement commits on its own the moment it runs. \`BEGIN\` and
+\`ROLLBACK\` are accepted — no error, no warning — and change nothing, because
+by the time \`ROLLBACK\` arrives there is no open transaction and the INSERT is
+already committed. Code that looked transactional against a pooled connection
+quietly stops being transactional here, and the first sign is usually a
+half-applied write in production rather than an exception in testing.
+
+Use the list instead. \`transaction([...])\` is the supported path and it does
+roll back: hand it two statements where the second violates a constraint and
+the whole call throws with the driver's error, leaving the first statement
+unapplied.
+
 A query resolves to an ARRAY OF ROWS. There is no \`{ data, error }\` envelope, no
 \`.data\` and no \`.rows\` to unwrap — those belong to \`sw.db\` and to other
 drivers, not to this one. Errors are the driver's errors and they throw. Result
@@ -3640,8 +3662,11 @@ the session refreshes server-side automatically.
 
 The full cookie-session surface (all on the runtime):
 
-  // Sign in/up AND set the session cookies on the response. Both resolve
-  // to a WRAPPER, { user }, never the bare user: destructure it. user has
+  // Sign in/up AND set the session cookies on the response. On success both
+  // resolve to a WRAPPER, { user }, never the bare user: destructure it.
+  // loginWithCookie has ONE other outcome — see "MFA on the cookie path"
+  // below — and signupWithCookie does not, because a brand-new account
+  // cannot already have a second factor. user has
   // id, email, role and display_name (null until set). Signup accepts
   // either (req, email, password), (req, email, password, { display_name }),
   // (req, { email, password, display_name }), or just ({ email, password,
@@ -3661,11 +3686,58 @@ The full cookie-session surface (all on the runtime):
   // Revoke the session server-side and clear the cookies; resolves to { ok: true }.
   await sw.auth.logoutWithCookie(req);
 
+  // Finish an MFA challenge AS a cookie session: brokers the challenge,
+  // completes the visitor sign-in and stages the cookies. Resolves to
+  // { user }, same wrapper as loginWithCookie's success branch.
+  const { user: signedIn } = await sw.auth.mfa.challengeWithCookie({ mfa_token, code });
+
   // Lower-level primitives the helpers wrap — for backends that
   // already hold a token pair (e.g. after verifyOtp or mfa.challenge)
-  // and want THAT session as cookies.
+  // and want THAT session as cookies. These stage cookies only; they do
+  // not perform the visitor completion the helpers above do.
   sw.auth.setSessionCookies(access, refresh);
   sw.auth.clearSessionCookies();
+
+### MFA on the cookie path
+
+A user who turns on MFA does not get a session from one call any more, and
+the cookie path is no exception. \`loginWithCookie\` answers a UNION — the
+password was right either way, but only one branch is a session:
+
+  const result = await sw.auth.loginWithCookie(req, email, password);
+
+  if (result.mfa_required) {
+    // No cookies staged, no user yet. result.mfa_token is a short-lived
+    // CHALLENGE TICKET — return it and let the page hold it in memory
+    // while it asks for the code.
+    return Response.json({ mfa_required: true, mfa_token: result.mfa_token });
+  }
+  const { user } = result;     // signed in, cookies already staged
+
+Branch on \`mfa_required\`, not on the presence of \`user\`. The second leg is
+still your backend's to broker — \`/mfa/challenge\` is not an app-user route,
+so a browser cannot drive it directly — and one call finishes it:
+
+  // Your second handler: the page posts back the ticket and the code.
+  const { user } = await sw.auth.mfa.challengeWithCookie({ mfa_token, code });
+  return Response.json({ user });
+
+\`challengeWithCookie\` is the cookie-path equivalent of \`challenge\`: it
+brokers the challenge, requires a complete session back before it does
+anything, performs the same visitor completion an ordinary cookie login
+performs, and stages the httpOnly cookies. A failure stages no
+AUTHENTICATED cookies — it does not promise the challenge left nothing
+behind, because the broker leg can consume the factor and mint a session
+before a later step fails. Reach for the lower-level pair —
+\`mfa.challenge\` then \`setSessionCookies\` — only if you have a reason to
+handle the token pair yourself; it does NOT do the visitor completion.
+
+**No session credentials are exposed to browser JAVASCRIPT.** The access and
+refresh tokens travel to the browser as httpOnly cookies, which it stores and
+sends but your page cannot read. The challenge ticket is
+a different thing: short-lived, useless without the code, and spent the
+moment the challenge succeeds — the page may hold it in memory between the
+two steps. A backup code works in place of the TOTP code here.
 
 Cookie-authed requests are origin-checked server-side: a cross-origin
 page can't ride the cookies into your API (blocked attempts log
@@ -3835,6 +3907,11 @@ the same shape as \`login\`.
 REST: POST /v1/auth/magic-link, POST /v1/auth/magic-link/verify
 MCP: auth_send_magic_link, auth_verify_magic_link
 
+A magic link is NOT challenged for a second factor, even for a user who has
+MFA enrolled — the challenge covers password sign-in, as the MFA section
+below says. If your app offers both, a magic link is the weaker door, and
+that is what an attacker with access to the inbox will use.
+
 How the link works (contract, verified against the route): \`sw.auth.signInWithOtp({ email, redirect_uri? })\`
 emails a single-use link, valid 15 minutes, that points at YOUR app:
 \`https://<your-subdomain>.somewhere.site/auth/magic?token=…\` (plus
@@ -3953,11 +4030,24 @@ FRESH proof, and enrollment happens in three steps.
     token: jwt, enrollment_id, activation_token: step.activation_token, code,
   });
   // backup_codes: eight recovery codes, shown once. Capture them here.
+  // Without the authenticator, the only way to sign in or to disable
+  // the factor — see below.
 
 The activation token is one-time, expires in five minutes, and is bound to
 the project, the user, that live session AND that enrollment_id — a token
 minted for one enrollment cannot activate another, and re-enrolling
 invalidates the earlier one.
+
+**There is no supported owner-side factor reset.** Those eight backup codes
+are the only way to complete a password sign-in, or to disable the factor,
+without the authenticator. You cannot clear it with your developer key,
+\`auth_user_update\` does not accept \`mfa_enabled\`, re-enrolling over the top
+answers \`ALREADY_ENROLLED\` (409), and revoking sessions ends access without
+clearing the factor — \`unenroll\` needs a fresh TOTP or backup code. Any other
+sign-in method you have enabled keeps the behaviour described above, but none
+of them clears the factor without a code. So treat the one-time display of
+those codes as part of your signup flow, not a detail: make the user store
+them before you let them finish.
 
 **Activation signs everyone out, including the caller.** A successful verify
 enables MFA, rotates the recovery codes and revokes every session and refresh
@@ -4024,6 +4114,9 @@ account's present owner, and that the new address is real and reachable.
 Until both land, the old address stays live and signed in.
 
   // 1. Start it. current_password is OPTIONAL and decides the first proof.
+  //    REST: PATCH /v1/auth/users/me (alias PATCH /v1/auth/me) with the
+  //    app-user JWT. The full path matters — /v1/users/me is a different
+  //    route and answers ROUTE_FORBIDDEN (403).
   await sw.auth.updateProfile(jwt, { email: next, current_password });
   // → { email_change: { id, pending: true, new_email,
   //      phase: 'verify_current_email' | 'verify_new_email',
@@ -4056,8 +4149,14 @@ What the flow is pinned to, and what breaks it:
 - **Fifteen minutes**, and five wrong codes on either leg, after which the
   change is discarded and you start again (\`AUTH_INVALID_CREDS\`, 401).
   Starting a new change replaces any change already pending.
-- **The address has to still be free.** If someone else takes it before you
-  finish, the final step answers \`AUTH_EMAIL_EXISTS\` (409).
+- **The address has to still be free**, and you find out at both ends.
+  Step 1 rejects an address already in use on this app with
+  \`AUTH_EMAIL_EXISTS\` (409) straight away, and if someone takes it while your
+  change is pending, the final step answers the same code. Say plainly what
+  that means: a signed-in user can learn whether a given address has an
+  account on your app, one address at a time, rate limited. That is the
+  behaviour today — design your copy around it rather than assuming the
+  error is neutral.
 - **The old address keeps working throughout.** The write happens once, at
   step 3; nothing is half-applied if the user abandons it.
 - **Send \`email\` on its own.** Combining it with \`display_name\` or \`metadata\`
@@ -4491,7 +4590,11 @@ export default async function (req, sw) {
   const sub = url.pathname.replace(/.*\\/auth/, '') || '/';
   const json = (d, s) => Response.json(d, { status: s || 200 });
   const body = async () => { try { return await req.json(); } catch (e) { return {}; } };
+  // Returns { user } after staging cookies, or { mfa_required, mfa_token }
+  // when the account has a second factor. The ticket goes to the page.
   if (req.method === 'POST' && sub === '/login')  { const b = await body(); return json(await sw.auth.loginWithCookie(req, b.email, b.password)); }
+  // The page posts the ticket back with the code; this stages the cookies.
+  if (req.method === 'POST' && sub === '/mfa')    { const b = await body(); return json(await sw.auth.mfa.challengeWithCookie({ mfa_token: b.mfa_token, code: b.code })); }
   if (req.method === 'POST' && sub === '/signup') { const b = await body(); return json(await sw.auth.signupWithCookie(req, b)); }
   if (req.method === 'POST' && sub === '/magic-link') {
     const b = await body();
@@ -10714,6 +10817,9 @@ export default async function (req, sw) {
 // api/auth/login.ts
 export default async function (req, sw) {
   const { email, password } = await req.json()
+  // { user } once cookies are staged, or { mfa_required, mfa_token } for an
+  // MFA-enrolled user — finish that one at mfa.challengeWithCookie. See the
+  // cookie MFA flow in \`docs({ topic: 'sw.auth' })\`.
   return Response.json(await sw.auth.loginWithCookie(req, email, password))
 }
 
