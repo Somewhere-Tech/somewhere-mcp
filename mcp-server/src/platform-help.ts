@@ -3520,7 +3520,8 @@ go.
   \`UPDATE … WHERE token = ? AND consumed_at IS NULL\` so two
   parallel uses can't both succeed.
 - **MFA (TOTP)** built in: enroll / verify / unenroll / challenge
-  + recovery codes.
+  + recovery codes. The challenge runs on PASSWORD sign-in; other
+  sign-in methods are not challenged.
 - **OAuth (Google, GitHub, Discord)** as first-class flows — the platform owns the
   callback, sets the cookie, no \`passport\` boilerplate.
 - **Header-based auto-refresh.** If the access token is in its last
